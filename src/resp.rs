@@ -12,6 +12,18 @@ pub enum Value {
     Array(Vec<Value>),
 }
 
+impl From<Value> for String {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::SimpleString(s) => s,
+            Value::BulkString(s) => s,
+            Value::Array(_) => {
+                panic!("Cannot convert Value::Array to String directly using this From implementation.");
+            }
+        }
+    }
+}
+
 impl Value {
     pub fn serialize(self) -> String {
         match self {
