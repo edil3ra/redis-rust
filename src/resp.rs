@@ -15,7 +15,7 @@ pub enum Value {
 impl Value {
     pub fn serialize(self) -> String {
         match self {
-            Value::SimpleString(s) => format!("+{}\r\n", s),
+            Value::SimpleString(s) => format!("+{s}\r\n"),
             Value::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
             _ => panic!("Unsupported value for serialize"),
         }
@@ -47,7 +47,7 @@ impl RespHandler {
     }
 
     pub async fn write_value(&mut self, value: Value) -> Result<()> {
-        self.stream.write(value.serialize().as_bytes()).await?;
+        self.stream.write_all(value.serialize().as_bytes()).await?;
 
         Ok(())
     }
@@ -58,7 +58,7 @@ fn parse_message(buffer: BytesMut) -> Result<(Value, usize)> {
         '+' => parse_simple_string(buffer),
         '*' => parse_array(buffer),
         '$' => parse_bulk_string(buffer),
-        _ => Err(anyhow::anyhow!("Not a known value type {:?}", buffer)),
+        _ => Err(anyhow::anyhow!("Not a known value type {buffer:?}")),
     }
 }
 
@@ -69,7 +69,7 @@ fn parse_simple_string(buffer: BytesMut) -> Result<(Value, usize)> {
         return Ok((Value::SimpleString(string), len + 1));
     }
 
-    return Err(anyhow::anyhow!("Invalid string {:?}", buffer));
+    Err(anyhow::anyhow!("Invalid string {buffer:?}"))
 }
 
 fn parse_array(buffer: BytesMut) -> Result<(Value, usize)> {
@@ -90,7 +90,7 @@ fn parse_array(buffer: BytesMut) -> Result<(Value, usize)> {
         bytes_consumed += len;
     }
 
-    return Ok((Value::Array(items), bytes_consumed));
+    Ok((Value::Array(items), bytes_consumed))
 }
 
 fn parse_bulk_string(buffer: BytesMut) -> Result<(Value, usize)> {
@@ -119,8 +119,7 @@ fn read_until_crlf(buffer: &[u8]) -> Option<(&[u8], usize)> {
             return Some((&buffer[0..(i - 1)], i + 1));
         }
     }
-
-    return None;
+    None
 }
 
 fn parse_int(buffer: &[u8]) -> Result<i64> {

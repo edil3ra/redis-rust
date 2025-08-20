@@ -2,9 +2,7 @@ mod resp;
 
 use anyhow::Result;
 use resp::Value;
-use tokio::{
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
@@ -17,7 +15,7 @@ async fn main() {
                 tokio::spawn(async move { handle_conn(stream).await });
             }
             Err(e) => {
-                println!("{}", e);
+                println!("{e}");
             }
         }
     }
@@ -33,20 +31,20 @@ async fn handle_conn(stream: TcpStream) {
     loop {
         let value = handler.read_value().await.unwrap();
 
-        println!("Got value {:?}", value);
+        println!("Got value {value:?}");
 
         let response = if let Some(v) = value {
             let (command, args) = extract_command(v).unwrap();
             match command.as_str() {
                 "PING" => Value::SimpleString("PONG".to_string()),
                 "ECHO" => args.first().unwrap().clone(),
-                c => panic!("Cannot handle command {}", c),
+                c => panic!("Cannot handle command {c}"),
             }
         } else {
             break;
         };
 
-        println!("Sending value {:?}", response);
+        println!("Sending value {response:?}");
 
         handler.write_value(response).await.unwrap();
     }
