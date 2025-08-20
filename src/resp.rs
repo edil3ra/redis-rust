@@ -9,6 +9,7 @@ use tokio::{
 pub enum Value {
     SimpleString(String),
     BulkString(String),
+    NullBulkString,
     Array(Vec<Value>),
 }
 
@@ -20,6 +21,9 @@ impl From<Value> for String {
             Value::Array(_) => {
                 panic!("Cannot convert Value::Array to String directly using this From implementation.");
             }
+            Value::NullBulkString => {
+                panic!("Cannot convert Value::NulBulkString to String directly using this From implementation.");
+            }
         }
     }
 }
@@ -29,6 +33,7 @@ impl Value {
         match self {
             Value::SimpleString(s) => format!("+{s}\r\n"),
             Value::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
+            Value::NullBulkString => format!("$-1\r\n"),
             _ => panic!("Unsupported value for serialize"),
         }
     }

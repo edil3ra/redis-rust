@@ -96,7 +96,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<usize> {
                         DbGetResult::KeyMissing => {
                             panic!("Key missing");
                         }
-                        DbGetResult::Expired => Value::BulkString("".to_string()),
+                        DbGetResult::Expired => Value::NullBulkString,
                     }
                 }
                 c => panic!("Cannot handle command {c}"),
