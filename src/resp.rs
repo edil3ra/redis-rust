@@ -8,6 +8,7 @@ use tokio::{
 #[derive(Clone, Debug)]
 pub enum Value {
     SimpleString(String),
+    Integer(u64),
     BulkString(String),
     NullBulkString,
     Array(Vec<Value>),
@@ -16,6 +17,7 @@ pub enum Value {
 impl From<Value> for String {
     fn from(value: Value) -> Self {
         match value {
+            Value::Integer(u) => u.to_string(),
             Value::SimpleString(s) => s,
             Value::BulkString(s) => s,
             Value::Array(_) => {
@@ -33,7 +35,8 @@ impl Value {
         match self {
             Value::SimpleString(s) => format!("+{s}\r\n"),
             Value::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
-            Value::NullBulkString => format!("$-1\r\n"),
+            Value::NullBulkString => "$-1\r\n".to_string(),
+            Value::Integer(v) => format!(":{v}\r\n"),
             _ => panic!("Unsupported value for serialize"),
         }
     }

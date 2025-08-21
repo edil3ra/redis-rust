@@ -125,7 +125,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a value"))?.clone();
 
                     db.lock().await.insert(key.into(), value.into(), None);
-                    Value::SimpleString("1".to_string())
+                    Value::Integer(1)
                 }
                 
                 c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
