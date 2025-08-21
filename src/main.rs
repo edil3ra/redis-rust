@@ -113,12 +113,26 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         DbGetResult::Expired => Value::NullBulkString,
                     }
                 }
+
+                "RPUSH" => {
+                    let key = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?.clone();
+
+
+                    let value = args
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a value"))?.clone();
+
+                    db.lock().await.insert(key.into(), value.into(), None);
+                    Value::SimpleString("1".to_string())
+                }
+                
                 c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
             }
         } else {
             break;
         };
-        dbg!(&response);
         handler.write_value(response).await?;
     }
 
