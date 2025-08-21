@@ -152,7 +152,11 @@ async fn main() {
         let db_for_stream = db.clone();
         match stream {
             Ok((stream, _add)) => {
-                tokio::spawn(async move { handle_conn(stream, db_for_stream).await });
+                tokio::spawn(async move {
+                    if let Err(e) = handle_conn(stream, db_for_stream).await {
+                        eprintln!("Error handling connection: {e}");
+                    }
+                });
             }
             Err(e) => {
                 eprintln!("Error accepting connection: {e}");
