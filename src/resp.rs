@@ -21,10 +21,14 @@ impl From<Value> for String {
             Value::SimpleString(s) => s,
             Value::BulkString(s) => s,
             Value::Array(_) => {
-                panic!("Cannot convert Value::Array to String directly using this From implementation.");
+                panic!(
+                    "Cannot convert Value::Array to String directly using this From implementation."
+                );
             }
             Value::NullBulkString => {
-                panic!("Cannot convert Value::NulBulkString to String directly using this From implementation.");
+                panic!(
+                    "Cannot convert Value::NulBulkString to String directly using this From implementation."
+                );
             }
         }
     }
@@ -67,7 +71,6 @@ impl RespHandler {
     }
 
     pub async fn write_value(&mut self, value: Value) -> Result<()> {
-        dbg!(value.clone().serialize().as_bytes());
         self.stream.write_all(value.serialize().as_bytes()).await?;
 
         Ok(())

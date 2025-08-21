@@ -10,13 +10,21 @@ use tokio::{
     time::Instant,
 };
 
+#[derive(Debug)]
 struct Db {
-    values: HashMap<String, String>,
+    values: HashMap<String, DbValue>,
     expirations: HashMap<String, Instant>,
 }
 
+#[derive(Clone, Debug)]
+enum DbValue {
+    Atom(String),
+    List(Vec<String>),
+}
+
+#[derive(Clone, Debug)]
 enum DbGetResult {
-    Ok(String),
+    Ok(DbValue),
     KeyMissing,
     Expired,
 }
@@ -29,13 +37,29 @@ impl Db {
         }
     }
 
-    fn insert(&mut self, k: String, v: String, millis: Option<u64>) {
+    fn insert_atom(&mut self, k: String, v: String, millis: Option<u64>) {
         if let Some(millis) = millis {
             self.expirations
                 .insert(k.clone(), Instant::now() + Duration::from_millis(millis));
         }
+        self.values.insert(k, DbValue::Atom(v));
+    }
 
-        self.values.insert(k, v);
+    fn insert_list(&mut self, k: String, v: String, millis: Option<u64>) -> u64 {
+        if let Some(millis) = millis {
+            self.expirations
+                .insert(k.clone(), Instant::now() + Duration::from_millis(millis));
+        }
+        if !self.values.contains_key(&k) {
+            self.values.insert(k.clone(), DbValue::List(Vec::new()));
+        }
+        if let Some(db_value) = self.values.get_mut(&k)
+            && let DbValue::List(list) = db_value
+        {
+            list.push(v);
+            return list.len() as u64
+        }
+        0
     }
 
     fn get(&mut self, key: &str) -> DbGetResult {
@@ -44,10 +68,10 @@ impl Db {
                 if Instant::now() >= *instant {
                     return DbGetResult::Expired;
                 } else {
-                    return DbGetResult::Ok(value.into());
+                    return DbGetResult::Ok(value.clone());
                 }
             } else {
-                return DbGetResult::Ok(value.into());
+                return DbGetResult::Ok(value.clone());
             }
         }
         DbGetResult::KeyMissing
@@ -101,14 +125,19 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         None
                     };
 
-                    db.lock().await.insert(key.into(), value.into(), millis_u64);
+                    db.lock()
+                        .await
+                        .insert_atom(key.into(), value.into(), millis_u64);
                     Value::SimpleString("OK".to_string())
                 }
                 "GET" => {
                     let key: String = args.first().unwrap().clone().into();
-                    let value = db.lock().await.get(&key);
-                    match value {
-                        DbGetResult::Ok(value) => Value::SimpleString(value.to_string()),
+                    let db_result = db.lock().await.get(&key);
+                    match db_result {
+                        DbGetResult::Ok(db_value) => match db_value {
+                            DbValue::Atom(v) => Value::SimpleString(v.to_string()),
+                            DbValue::List(items) => todo!(),
+                        },
                         DbGetResult::KeyMissing => Value::NullBulkString,
                         DbGetResult::Expired => Value::NullBulkString,
                     }
@@ -117,17 +146,18 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                 "RPUSH" => {
                     let key = args
                         .first()
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?.clone();
-
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
+                        .clone();
 
                     let value = args
                         .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a value"))?.clone();
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a value"))?
+                        .clone();
 
-                    db.lock().await.insert(key.into(), value.into(), None);
-                    Value::Integer(1)
+                    let length = db.lock().await.insert_list(key.into(), value.into(), None);
+                    Value::Integer(length)
                 }
-                
+
                 c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
             }
         } else {
