@@ -64,6 +64,7 @@ impl RespHandler {
     }
 
     pub async fn write_value(&mut self, value: Value) -> Result<()> {
+        dbg!(value.clone().serialize().as_bytes());
         self.stream.write_all(value.serialize().as_bytes()).await?;
 
         Ok(())

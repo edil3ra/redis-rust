@@ -54,32 +54,48 @@ impl Db {
     }
 }
 
-async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<usize> {
+async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
     let mut handler = resp::RespHandler::new(stream);
 
     loop {
-        let value = handler.read_value().await.unwrap();
-        let response = if let Some(v) = value {
-            let (command, args) = extract_command(v).unwrap();
+        let input = handler.read_value().await.unwrap();
+        let response = if let Some(input) = input {
+            let (command, args) = extract_command(input)?;
             match command.to_uppercase().as_str() {
                 "PING" => Value::SimpleString("PONG".to_string()),
-                "ECHO" => args.first().unwrap().clone(),
+                "ECHO" => {
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("ECHO command requires an argument"));
+                    arg.cloned()?
+                }
                 "SET" => {
-                    let key = args.first().unwrap().clone();
-                    let value = args.get(1).unwrap().clone();
+                    let key_value = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("SET command requires a key"))?;
+                    let key = key_value.clone();
+
+                    let val_value = args
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("SET command requires a value"))?;
+                    let value = val_value.clone();
+
                     let px: Option<String> = args.get(2).map(|px| px.clone().into());
                     let millis_string: Option<String> = args.get(3).map(|px| px.clone().into());
-                    let millis_u64 = if let Some(px) = px {
+                    let millis_u64: Option<u64> = if let Some(px) = px {
                         if px.as_str().to_uppercase() == "PX" {
                             if let Some(m) = millis_string {
-                                m.parse::<u64>().ok()
+                                let milli = m
+                                    .parse::<u64>()
+                                    .map_err(|e| anyhow::anyhow!("Invalid PX value: {}", e))?;
+                                Some(milli)
                             } else {
-                                panic!("Missing millis");
-                                // return Err(anyhow::anyhow!("Missing millis"));
+                                return Err(anyhow::anyhow!("Missing milliseconds value for PX"));
                             }
                         } else {
-                            panic!("Missing PX");
-                            // return Err(anyhow::anyhow!("Missing PX "));
+                            return Err(anyhow::anyhow!(
+                                "Unknown argument after value. Expected 'PX' or end of command."
+                            ));
                         }
                     } else {
                         None
@@ -93,21 +109,20 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<usize> {
                     let value = db.lock().await.get(&key);
                     match value {
                         DbGetResult::Ok(value) => Value::SimpleString(value.to_string()),
-                        DbGetResult::KeyMissing => {
-                            panic!("Key missing");
-                        }
+                        DbGetResult::KeyMissing => Value::NullBulkString,
                         DbGetResult::Expired => Value::NullBulkString,
                     }
                 }
-                c => panic!("Cannot handle command {c}"),
+                c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
             }
         } else {
             break;
         };
-        handler.write_value(response).await.unwrap();
+        dbg!(&response);
+        handler.write_value(response).await?;
     }
 
-    Ok(1)
+    Ok(())
 }
 
 fn extract_command(value: Value) -> Result<(String, Vec<Value>)> {
@@ -140,7 +155,7 @@ async fn main() {
                 tokio::spawn(async move { handle_conn(stream, db_for_stream).await });
             }
             Err(e) => {
-                println!("{e}");
+                eprintln!("Error accepting connection: {e}");
             }
         }
     }
