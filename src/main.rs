@@ -81,6 +81,15 @@ impl Db {
         0
     }
 
+    fn llen(&mut self, key: &str) -> u64 {
+        if let Some(db_value) = self.values.get_mut(key)
+            && let DbValue::List(list) = db_value
+        {
+            return list.len() as u64;
+        }
+        0
+    }
+
     fn get(&mut self, key: &str) -> DbGetResult {
         if let Some(value) = self.values.get(key) {
             if let Some(instant) = self.expirations.get(key) {
@@ -210,6 +219,16 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .collect::<Vec<String>>();
 
                     let length = db.lock().await.lpush(&String::from(key), values);
+                    RespValue::Integer(length)
+                }
+
+                "LLEN" => {
+                    let key = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("LLEN command requires a key"))?
+                        .clone();
+
+                    let length = db.lock().await.llen(&String::from(key));
                     RespValue::Integer(length)
                 }
 
