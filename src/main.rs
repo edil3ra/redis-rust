@@ -81,6 +81,15 @@ impl Db {
         0
     }
 
+    fn lpop(&mut self, key: &str) -> Option<String> {
+        if let Some(db_value) = self.values.get_mut(key)
+            && let DbValue::List(list) = db_value
+        {
+            return list.pop_front();
+        }
+        None
+    }
+
     fn llen(&mut self, key: &str) -> u64 {
         if let Some(db_value) = self.values.get_mut(key)
             && let DbValue::List(list) = db_value
@@ -220,6 +229,20 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
 
                     let length = db.lock().await.lpush(&String::from(key), values);
                     RespValue::Integer(length)
+                }
+
+                "LPOP" => {
+                    let key = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("LPOP command requires a key"))?
+                        .clone();
+
+                    let item = db.lock().await.lpop(&String::from(key));
+                    if let Some(item) = item {
+                        RespValue::BulkString(item)
+                    } else {
+                        RespValue::NullBulkString
+                    }
                 }
 
                 "LLEN" => {
