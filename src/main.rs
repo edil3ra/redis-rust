@@ -51,13 +51,7 @@ impl Db {
         self.values.insert(key.to_owned(), DbValue::Atom(value));
     }
 
-    fn rpush(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
-        if let Some(millis) = millis {
-            self.expirations.insert(
-                key.to_owned(),
-                Instant::now() + Duration::from_millis(millis),
-            );
-        }
+    fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
         if !self.values.contains_key(key) {
             self.values
                 .insert(key.to_owned(), DbValue::List(VecDeque::new()));
@@ -71,13 +65,7 @@ impl Db {
         0
     }
 
-    fn lpush(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
-        if let Some(millis) = millis {
-            self.expirations.insert(
-                key.to_owned(),
-                Instant::now() + Duration::from_millis(millis),
-            );
-        }
+    fn lpush(&mut self, key: &str, values: Vec<String>) -> u64 {
         if !self.values.contains_key(key) {
             self.values
                 .insert(key.to_owned(), DbValue::List(VecDeque::new()));
@@ -203,7 +191,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .map(|resp_value| resp_value.clone().into())
                         .collect::<Vec<String>>();
 
-                    let length = db.lock().await.rpush(&String::from(key), values, None);
+                    let length = db.lock().await.rpush(&String::from(key), values);
                     RespValue::Integer(length)
                 }
 
@@ -221,7 +209,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .map(|resp_value| resp_value.clone().into())
                         .collect::<Vec<String>>();
 
-                    let length = db.lock().await.lpush(&String::from(key), values, None);
+                    let length = db.lock().await.lpush(&String::from(key), values);
                     RespValue::Integer(length)
                 }
 
