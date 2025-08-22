@@ -37,23 +37,28 @@ impl Db {
         }
     }
 
-    fn insert_atom(&mut self, key: String, value: String, millis: Option<u64>) {
+    fn insert_atom(&mut self, key: &str, value: String, millis: Option<u64>) {
         if let Some(millis) = millis {
-            self.expirations
-                .insert(key.clone(), Instant::now() + Duration::from_millis(millis));
+            self.expirations.insert(
+                key.to_owned(),
+                Instant::now() + Duration::from_millis(millis),
+            );
         }
-        self.values.insert(key, DbValue::Atom(value));
+        self.values.insert(key.to_owned(), DbValue::Atom(value));
     }
 
-    fn insert_list(&mut self, key: String, values: Vec<String>, millis: Option<u64>) -> u64 {
+    fn insert_list(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
         if let Some(millis) = millis {
-            self.expirations
-                .insert(key.clone(), Instant::now() + Duration::from_millis(millis));
+            self.expirations.insert(
+                key.to_owned(),
+                Instant::now() + Duration::from_millis(millis),
+            );
         }
-        if !self.values.contains_key(&key) {
-            self.values.insert(key.clone(), DbValue::List(Vec::new()));
+        if !self.values.contains_key(key) {
+            self.values
+                .insert(key.to_owned(), DbValue::List(Vec::new()));
         }
-        if let Some(db_value) = self.values.get_mut(&key)
+        if let Some(db_value) = self.values.get_mut(key)
             && let DbValue::List(list) = db_value
         {
             list.extend(values);
@@ -76,6 +81,16 @@ impl Db {
         }
         DbGetResult::KeyMissing
     }
+
+    // fn lrange(&mut self, key: &str, start: usize, end: usize) -> DbGetResult {
+    //     if let Some(db_value) = self.values.get(key)
+    //         && let DbValue::List(list) = db_value
+    //     {
+    //         // list.extend(values);
+    //         // return list.len() as u64;
+    //     }
+    //     DbGetResult::KeyMissing
+    // }
 }
 
 async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
@@ -124,10 +139,9 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     } else {
                         None
                     };
-
                     db.lock()
                         .await
-                        .insert_atom(key.into(), value.into(), millis_u64);
+                        .insert_atom(&String::from(key), value.into(), millis_u64);
                     RespValue::SimpleString("OK".to_string())
                 }
                 "GET" => {
@@ -157,7 +171,10 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .map(|resp_value| resp_value.clone().into())
                         .collect::<Vec<String>>();
 
-                    let length = db.lock().await.insert_list(key.into(), values, None);
+                    let length = db
+                        .lock()
+                        .await
+                        .insert_list(&String::from(key), values, None);
                     RespValue::Integer(length)
                 }
 
