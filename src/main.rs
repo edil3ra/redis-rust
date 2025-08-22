@@ -85,11 +85,11 @@ impl Db {
     fn lrange(&mut self, key: &str, start: usize, stop: usize) -> DbGetResult {
         if let Some(db_value) = self.values.get(key)
             && let DbValue::List(list) = db_value
-            && start >= list.len()
-            && start > stop
+            && start < list.len()
+            && start < stop
         {
-            let stop = stop.min(list.len());
-            return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()))
+            let stop = stop.min(list.len() - 1);
+            return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()));
         }
         DbGetResult::Ok(DbValue::List(Vec::new()))
     }
@@ -185,23 +185,23 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     let key: String = args
                         .first()
                         .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
-                        .clone().into();
+                        .clone()
+                        .into();
 
                     let start: usize = args
                         .get(1)
                         .ok_or_else(|| anyhow::anyhow!("LRANGE command require a start value"))?
-                        .clone().into();
+                        .clone()
+                        .into();
 
                     let stop: usize = args
                         .get(2)
                         .ok_or_else(|| anyhow::anyhow!("LRANGE command require a stop value"))?
-                        .clone().into();
+                        .clone()
+                        .into();
 
-                    let db_result = db
-                        .lock()
-                        .await
-                        .lrange(&key, start, stop);
-                    
+                    let db_result = db.lock().await.lrange(&key, start, stop);
+
                     if let DbGetResult::Ok(DbValue::List(l)) = db_result {
                         let v = l.into_iter().map(RespValue::BulkString).collect();
                         RespValue::Array(v)

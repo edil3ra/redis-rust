@@ -14,7 +14,6 @@ pub enum RespValue {
     Array(Vec<RespValue>),
 }
 
-
 impl From<RespValue> for String {
     fn from(value: RespValue) -> Self {
         match value {
@@ -33,13 +32,13 @@ impl From<RespValue> for usize {
         match value {
             RespValue::Integer(u) => u as usize,
             RespValue::SimpleString(s) => s.parse().unwrap(),
+            RespValue::BulkString(s) => s.parse().unwrap(),
             _ => {
                 panic!("Cannot convert to usize");
             }
         }
     }
 }
-
 
 impl RespValue {
     pub fn serialize(self) -> String {
@@ -52,7 +51,7 @@ impl RespValue {
                 let length = v.len();
                 let items_serialized: String = v.into_iter().map(|item| item.serialize()).collect();
                 format!("*{length}\r\n{items_serialized}")
-            },
+            }
         }
     }
 }
