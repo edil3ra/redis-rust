@@ -27,10 +27,10 @@ impl From<RespValue> for String {
     }
 }
 
-impl From<RespValue> for usize {
+impl From<RespValue> for isize {
     fn from(value: RespValue) -> Self {
         match value {
-            RespValue::Integer(u) => u as usize,
+            RespValue::Integer(u) => u as isize,
             RespValue::SimpleString(s) => s.parse().unwrap(),
             RespValue::BulkString(s) => s.parse().unwrap(),
             _ => {

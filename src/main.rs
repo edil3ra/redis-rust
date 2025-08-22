@@ -82,14 +82,30 @@ impl Db {
         DbGetResult::KeyMissing
     }
 
-    fn lrange(&mut self, key: &str, start: usize, stop: usize) -> DbGetResult {
+    fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbGetResult {
         if let Some(db_value) = self.values.get(key)
             && let DbValue::List(list) = db_value
-            && start < list.len()
-            && start < stop
         {
-            let stop = stop.min(list.len() - 1);
-            return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()));
+            let length = list.len();
+
+            let start = if start < 0 {
+                length as isize + start
+            } else {
+                start
+            }
+            .max(0) as usize;
+
+            let stop = if stop < 0 {
+                length as isize + stop
+            } else {
+                stop
+            }
+            .max(0) as usize;
+
+            if start < length && start < stop {
+                let stop = stop.min(list.len() - 1);
+                return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()));
+            }
         }
         DbGetResult::Ok(DbValue::List(Vec::new()))
     }
@@ -188,13 +204,13 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .clone()
                         .into();
 
-                    let start: usize = args
+                    let start: isize = args
                         .get(1)
                         .ok_or_else(|| anyhow::anyhow!("LRANGE command require a start value"))?
                         .clone()
                         .into();
 
-                    let stop: usize = args
+                    let stop: isize = args
                         .get(2)
                         .ok_or_else(|| anyhow::anyhow!("LRANGE command require a stop value"))?
                         .clone()
