@@ -82,15 +82,17 @@ impl Db {
         DbGetResult::KeyMissing
     }
 
-    // fn lrange(&mut self, key: &str, start: usize, end: usize) -> DbGetResult {
-    //     if let Some(db_value) = self.values.get(key)
-    //         && let DbValue::List(list) = db_value
-    //     {
-    //         // list.extend(values);
-    //         // return list.len() as u64;
-    //     }
-    //     DbGetResult::KeyMissing
-    // }
+    fn lrange(&mut self, key: &str, start: usize, stop: usize) -> DbGetResult {
+        if let Some(db_value) = self.values.get(key)
+            && let DbValue::List(list) = db_value
+            && start >= list.len()
+            && start > stop
+        {
+            let stop = stop.min(list.len());
+            return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()))
+        }
+        DbGetResult::Ok(DbValue::List(Vec::new()))
+    }
 }
 
 async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
@@ -144,6 +146,28 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .insert_atom(&String::from(key), value.into(), millis_u64);
                     RespValue::SimpleString("OK".to_string())
                 }
+
+                "RPUSH" => {
+                    let key = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
+                        .clone();
+                    if args.len() < 2 {
+                        return Err(anyhow::anyhow!("RPUSH command requires at least one value"));
+                    }
+
+                    let values = args[1..]
+                        .iter()
+                        .map(|resp_value| resp_value.clone().into())
+                        .collect::<Vec<String>>();
+
+                    let length = db
+                        .lock()
+                        .await
+                        .insert_list(&String::from(key), values, None);
+                    RespValue::Integer(length)
+                }
+
                 "GET" => {
                     let key: String = args.first().unwrap().clone().into();
                     let db_result = db.lock().await.get(&key);
@@ -157,25 +181,33 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     }
                 }
 
-                "RPUSH" => {
-                    let key = args
+                "LRANGE" => {
+                    let key: String = args
                         .first()
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
-                        .clone();
-                    if args.len() < 2 {
-                        return Err(anyhow::anyhow!("RPUSH command requires at least a value"));
-                    }
+                        .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
+                        .clone().into();
 
-                    let values = args[1..]
-                        .iter()
-                        .map(|resp_value| resp_value.clone().into())
-                        .collect::<Vec<String>>();
+                    let start: usize = args
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("LRANGE command require a start value"))?
+                        .clone().into();
 
-                    let length = db
+                    let stop: usize = args
+                        .get(2)
+                        .ok_or_else(|| anyhow::anyhow!("LRANGE command require a stop value"))?
+                        .clone().into();
+
+                    let db_result = db
                         .lock()
                         .await
-                        .insert_list(&String::from(key), values, None);
-                    RespValue::Integer(length)
+                        .lrange(&key, start, stop);
+                    
+                    if let DbGetResult::Ok(DbValue::List(l)) = db_result {
+                        let v = l.into_iter().map(RespValue::BulkString).collect();
+                        RespValue::Array(v)
+                    } else {
+                        RespValue::NullBulkString
+                    }
                 }
 
                 c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),

@@ -14,25 +14,32 @@ pub enum RespValue {
     Array(Vec<RespValue>),
 }
 
+
 impl From<RespValue> for String {
     fn from(value: RespValue) -> Self {
         match value {
             RespValue::Integer(u) => u.to_string(),
             RespValue::SimpleString(s) => s,
             RespValue::BulkString(s) => s,
-            RespValue::Array(_) => {
-                panic!(
-                    "Cannot convert Value::Array to String directly using this From implementation."
-                );
-            }
-            RespValue::NullBulkString => {
-                panic!(
-                    "Cannot convert Value::NulBulkString to String directly using this From implementation."
-                );
+            _ => {
+                panic!("Cannot convert to string");
             }
         }
     }
 }
+
+impl From<RespValue> for usize {
+    fn from(value: RespValue) -> Self {
+        match value {
+            RespValue::Integer(u) => u as usize,
+            RespValue::SimpleString(s) => s.parse().unwrap(),
+            _ => {
+                panic!("Cannot convert to usize");
+            }
+        }
+    }
+}
+
 
 impl RespValue {
     pub fn serialize(self) -> String {
@@ -41,7 +48,11 @@ impl RespValue {
             RespValue::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
             RespValue::NullBulkString => "$-1\r\n".to_string(),
             RespValue::Integer(v) => format!(":{v}\r\n"),
-            _ => panic!("Unsupported value for serialize"),
+            RespValue::Array(v) => {
+                let length = v.len();
+                let items_serialized: String = v.into_iter().map(|item| item.serialize()).collect();
+                format!("*{length}\r\n{items_serialized}")
+            },
         }
     }
 }
