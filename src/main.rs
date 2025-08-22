@@ -81,13 +81,23 @@ impl Db {
         0
     }
 
-    fn lpop(&mut self, key: &str) -> Option<String> {
+    fn lpop(&mut self, key: &str, length: usize) -> Vec<String> {
         if let Some(db_value) = self.values.get_mut(key)
             && let DbValue::List(list) = db_value
+            && !list.is_empty()
         {
-            return list.pop_front();
+            let mut poped_list: Vec<String> = Vec::new();
+            for _ in 0..length {
+                let value = list.pop_front();
+                if let Some(value) = value {
+                    poped_list.push(value);
+                } else {
+                    break;
+                }
+            }
+            return poped_list;
         }
-        None
+        vec![]
     }
 
     fn llen(&mut self, key: &str) -> u64 {
@@ -237,11 +247,19 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .ok_or_else(|| anyhow::anyhow!("LPOP command requires a key"))?
                         .clone();
 
-                    let item = db.lock().await.lpop(&String::from(key));
-                    if let Some(item) = item {
-                        RespValue::BulkString(item)
-                    } else {
+                    let length: usize =
+                        args.get(1).unwrap_or(&RespValue::Integer(1)).clone().into();
+
+                    let poped_list = db.lock().await.lpop(&String::from(key), length);
+                    if poped_list.is_empty() {
                         RespValue::NullBulkString
+                    } else if poped_list.len() == 1 {
+                        RespValue::SimpleString(poped_list[0].clone())
+                    }
+                    else {
+                        RespValue::Array(
+                            poped_list.into_iter().map(RespValue::BulkString).collect(),
+                        )
                     }
                 }
 
