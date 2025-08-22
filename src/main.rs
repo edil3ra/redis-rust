@@ -1,6 +1,10 @@
 mod resp;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Result;
 use resp::RespValue;
@@ -19,7 +23,7 @@ struct Db {
 #[derive(Clone, Debug)]
 enum DbValue {
     Atom(String),
-    List(Vec<String>),
+    List(VecDeque<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +51,7 @@ impl Db {
         self.values.insert(key.to_owned(), DbValue::Atom(value));
     }
 
-    fn insert_list(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
+    fn rpush(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
         if let Some(millis) = millis {
             self.expirations.insert(
                 key.to_owned(),
@@ -56,12 +60,34 @@ impl Db {
         }
         if !self.values.contains_key(key) {
             self.values
-                .insert(key.to_owned(), DbValue::List(Vec::new()));
+                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
         }
         if let Some(db_value) = self.values.get_mut(key)
             && let DbValue::List(list) = db_value
         {
             list.extend(values);
+            return list.len() as u64;
+        }
+        0
+    }
+
+    fn lpush(&mut self, key: &str, values: Vec<String>, millis: Option<u64>) -> u64 {
+        if let Some(millis) = millis {
+            self.expirations.insert(
+                key.to_owned(),
+                Instant::now() + Duration::from_millis(millis),
+            );
+        }
+        if !self.values.contains_key(key) {
+            self.values
+                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
+        }
+        if let Some(db_value) = self.values.get_mut(key)
+            && let DbValue::List(list) = db_value
+        {
+            for value in values.into_iter() {
+                list.push_front(value);
+            }
             return list.len() as u64;
         }
         0
@@ -104,10 +130,10 @@ impl Db {
 
             if start < length && start < stop {
                 let stop = stop.min(list.len() - 1);
-                return DbGetResult::Ok(DbValue::List(list[start..=stop].to_owned()));
+                return DbGetResult::Ok(DbValue::List(list.range(start..=stop).cloned().collect()));
             }
         }
-        DbGetResult::Ok(DbValue::List(Vec::new()))
+        DbGetResult::Ok(DbValue::List(VecDeque::new()))
     }
 }
 
@@ -177,10 +203,25 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .map(|resp_value| resp_value.clone().into())
                         .collect::<Vec<String>>();
 
-                    let length = db
-                        .lock()
-                        .await
-                        .insert_list(&String::from(key), values, None);
+                    let length = db.lock().await.rpush(&String::from(key), values, None);
+                    RespValue::Integer(length)
+                }
+
+                "LPUSH" => {
+                    let key = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
+                        .clone();
+                    if args.len() < 2 {
+                        return Err(anyhow::anyhow!("RPUSH command requires at least one value"));
+                    }
+
+                    let values = args[1..]
+                        .iter()
+                        .map(|resp_value| resp_value.clone().into())
+                        .collect::<Vec<String>>();
+
+                    let length = db.lock().await.lpush(&String::from(key), values, None);
                     RespValue::Integer(length)
                 }
 
