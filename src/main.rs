@@ -3,7 +3,7 @@ mod resp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use resp::Value;
+use resp::RespValue;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -37,27 +37,27 @@ impl Db {
         }
     }
 
-    fn insert_atom(&mut self, k: String, v: String, millis: Option<u64>) {
+    fn insert_atom(&mut self, key: String, value: String, millis: Option<u64>) {
         if let Some(millis) = millis {
             self.expirations
-                .insert(k.clone(), Instant::now() + Duration::from_millis(millis));
+                .insert(key.clone(), Instant::now() + Duration::from_millis(millis));
         }
-        self.values.insert(k, DbValue::Atom(v));
+        self.values.insert(key, DbValue::Atom(value));
     }
 
-    fn insert_list(&mut self, k: String, v: String, millis: Option<u64>) -> u64 {
+    fn insert_list(&mut self, key: String, values: Vec<String>, millis: Option<u64>) -> u64 {
         if let Some(millis) = millis {
             self.expirations
-                .insert(k.clone(), Instant::now() + Duration::from_millis(millis));
+                .insert(key.clone(), Instant::now() + Duration::from_millis(millis));
         }
-        if !self.values.contains_key(&k) {
-            self.values.insert(k.clone(), DbValue::List(Vec::new()));
+        if !self.values.contains_key(&key) {
+            self.values.insert(key.clone(), DbValue::List(Vec::new()));
         }
-        if let Some(db_value) = self.values.get_mut(&k)
+        if let Some(db_value) = self.values.get_mut(&key)
             && let DbValue::List(list) = db_value
         {
-            list.push(v);
-            return list.len() as u64
+            list.extend(values);
+            return list.len() as u64;
         }
         0
     }
@@ -86,7 +86,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
         let response = if let Some(input) = input {
             let (command, args) = extract_command(input)?;
             match command.to_uppercase().as_str() {
-                "PING" => Value::SimpleString("PONG".to_string()),
+                "PING" => RespValue::SimpleString("PONG".to_string()),
                 "ECHO" => {
                     let arg = args
                         .first()
@@ -128,18 +128,18 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     db.lock()
                         .await
                         .insert_atom(key.into(), value.into(), millis_u64);
-                    Value::SimpleString("OK".to_string())
+                    RespValue::SimpleString("OK".to_string())
                 }
                 "GET" => {
                     let key: String = args.first().unwrap().clone().into();
                     let db_result = db.lock().await.get(&key);
                     match db_result {
                         DbGetResult::Ok(db_value) => match db_value {
-                            DbValue::Atom(v) => Value::SimpleString(v.to_string()),
+                            DbValue::Atom(v) => RespValue::SimpleString(v.to_string()),
                             DbValue::List(items) => todo!(),
                         },
-                        DbGetResult::KeyMissing => Value::NullBulkString,
-                        DbGetResult::Expired => Value::NullBulkString,
+                        DbGetResult::KeyMissing => RespValue::NullBulkString,
+                        DbGetResult::Expired => RespValue::NullBulkString,
                     }
                 }
 
@@ -148,14 +148,17 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .first()
                         .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
                         .clone();
+                    if args.len() < 2 {
+                        return Err(anyhow::anyhow!("RPUSH command requires at least a value"));
+                    }
 
-                    let value = args
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a value"))?
-                        .clone();
+                    let values = args[1..]
+                        .iter()
+                        .map(|resp_value| resp_value.clone().into())
+                        .collect::<Vec<String>>();
 
-                    let length = db.lock().await.insert_list(key.into(), value.into(), None);
-                    Value::Integer(length)
+                    let length = db.lock().await.insert_list(key.into(), values, None);
+                    RespValue::Integer(length)
                 }
 
                 c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
@@ -169,9 +172,9 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
     Ok(())
 }
 
-fn extract_command(value: Value) -> Result<(String, Vec<Value>)> {
+fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
     match value {
-        Value::Array(a) => Ok((
+        RespValue::Array(a) => Ok((
             unpack_bulk_str(a.first().unwrap().clone())?,
             a.into_iter().skip(1).collect(),
         )),
@@ -179,9 +182,9 @@ fn extract_command(value: Value) -> Result<(String, Vec<Value>)> {
     }
 }
 
-fn unpack_bulk_str(value: Value) -> Result<String> {
+fn unpack_bulk_str(value: RespValue) -> Result<String> {
     match value {
-        Value::BulkString(s) => Ok(s),
+        RespValue::BulkString(s) => Ok(s),
         _ => Err(anyhow::anyhow!("Expected command to be a bulk string")),
     }
 }

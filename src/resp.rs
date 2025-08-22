@@ -6,26 +6,26 @@ use tokio::{
 };
 
 #[derive(Clone, Debug)]
-pub enum Value {
+pub enum RespValue {
     SimpleString(String),
     Integer(u64),
     BulkString(String),
     NullBulkString,
-    Array(Vec<Value>),
+    Array(Vec<RespValue>),
 }
 
-impl From<Value> for String {
-    fn from(value: Value) -> Self {
+impl From<RespValue> for String {
+    fn from(value: RespValue) -> Self {
         match value {
-            Value::Integer(u) => u.to_string(),
-            Value::SimpleString(s) => s,
-            Value::BulkString(s) => s,
-            Value::Array(_) => {
+            RespValue::Integer(u) => u.to_string(),
+            RespValue::SimpleString(s) => s,
+            RespValue::BulkString(s) => s,
+            RespValue::Array(_) => {
                 panic!(
                     "Cannot convert Value::Array to String directly using this From implementation."
                 );
             }
-            Value::NullBulkString => {
+            RespValue::NullBulkString => {
                 panic!(
                     "Cannot convert Value::NulBulkString to String directly using this From implementation."
                 );
@@ -34,13 +34,13 @@ impl From<Value> for String {
     }
 }
 
-impl Value {
+impl RespValue {
     pub fn serialize(self) -> String {
         match self {
-            Value::SimpleString(s) => format!("+{s}\r\n"),
-            Value::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
-            Value::NullBulkString => "$-1\r\n".to_string(),
-            Value::Integer(v) => format!(":{v}\r\n"),
+            RespValue::SimpleString(s) => format!("+{s}\r\n"),
+            RespValue::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
+            RespValue::NullBulkString => "$-1\r\n".to_string(),
+            RespValue::Integer(v) => format!(":{v}\r\n"),
             _ => panic!("Unsupported value for serialize"),
         }
     }
@@ -59,7 +59,7 @@ impl RespHandler {
         }
     }
 
-    pub async fn read_value(&mut self) -> Result<Option<Value>> {
+    pub async fn read_value(&mut self) -> Result<Option<RespValue>> {
         let bytes_read = self.stream.read_buf(&mut self.buffer).await?;
 
         if bytes_read == 0 {
@@ -70,14 +70,14 @@ impl RespHandler {
         Ok(Some(v))
     }
 
-    pub async fn write_value(&mut self, value: Value) -> Result<()> {
+    pub async fn write_value(&mut self, value: RespValue) -> Result<()> {
         self.stream.write_all(value.serialize().as_bytes()).await?;
 
         Ok(())
     }
 }
 
-fn parse_message(buffer: BytesMut) -> Result<(Value, usize)> {
+fn parse_message(buffer: BytesMut) -> Result<(RespValue, usize)> {
     match buffer[0] as char {
         '+' => parse_simple_string(buffer),
         '*' => parse_array(buffer),
@@ -86,17 +86,17 @@ fn parse_message(buffer: BytesMut) -> Result<(Value, usize)> {
     }
 }
 
-fn parse_simple_string(buffer: BytesMut) -> Result<(Value, usize)> {
+fn parse_simple_string(buffer: BytesMut) -> Result<(RespValue, usize)> {
     if let Some((line, len)) = read_until_crlf(&buffer[1..]) {
         let string = String::from_utf8(line.to_vec()).unwrap();
 
-        return Ok((Value::SimpleString(string), len + 1));
+        return Ok((RespValue::SimpleString(string), len + 1));
     }
 
     Err(anyhow::anyhow!("Invalid string {buffer:?}"))
 }
 
-fn parse_array(buffer: BytesMut) -> Result<(Value, usize)> {
+fn parse_array(buffer: BytesMut) -> Result<(RespValue, usize)> {
     let (array_length, mut bytes_consumed) =
         if let Some((line, len)) = read_until_crlf(&buffer[1..]) {
             let array_length = parse_int(line)?;
@@ -114,10 +114,10 @@ fn parse_array(buffer: BytesMut) -> Result<(Value, usize)> {
         bytes_consumed += len;
     }
 
-    Ok((Value::Array(items), bytes_consumed))
+    Ok((RespValue::Array(items), bytes_consumed))
 }
 
-fn parse_bulk_string(buffer: BytesMut) -> Result<(Value, usize)> {
+fn parse_bulk_string(buffer: BytesMut) -> Result<(RespValue, usize)> {
     let (bulk_str_len, bytes_consumed) = if let Some((line, len)) = read_until_crlf(&buffer[1..]) {
         let bulk_str_len = parse_int(line)?;
 
@@ -130,7 +130,7 @@ fn parse_bulk_string(buffer: BytesMut) -> Result<(Value, usize)> {
     let total_parsed = end_of_bulk_str + 2;
 
     Ok((
-        Value::BulkString(String::from_utf8(
+        RespValue::BulkString(String::from_utf8(
             buffer[bytes_consumed..end_of_bulk_str].to_vec(),
         )?),
         total_parsed,
