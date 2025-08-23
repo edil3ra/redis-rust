@@ -66,6 +66,17 @@ impl From<RespValue> for usize {
     }
 }
 
+impl From<RespValue> for f64 {
+    fn from(value: RespValue) -> Self {
+        match value {
+            RespValue::BulkString(s) => s.parse().unwrap(),
+            _ => {
+                panic!("Cannot convert to f64");
+            }
+        }
+    }
+}
+
 impl RespValue {
     pub fn serialize(self) -> String {
         match self {

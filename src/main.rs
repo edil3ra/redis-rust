@@ -271,11 +271,16 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         .clone()
                         .into();
 
-                    let timeout: u64 = args.get(1).unwrap_or(&RespValue::Integer(0)).clone().into();
-                    let end_time = if timeout == 0 {
+                    let timeout: f64 = args
+                        .get(1)
+                        .unwrap_or(&RespValue::BulkString("0".to_string()))
+                        .clone()
+                        .into();
+
+                    let end_time = if timeout == 0. {
                         None
                     } else {
-                        Some(Instant::now() + Duration::from_secs(timeout))
+                        Some(Instant::now() + Duration::from_secs_f64(timeout))
                     };
 
                     let resp_value;
@@ -299,7 +304,8 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                             resp_value = RespValue::NullBulkString;
                             break;
                         }
-                        tokio::time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI)).await;
+                        tokio::time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI))
+                            .await;
                     }
                     resp_value
                 }
