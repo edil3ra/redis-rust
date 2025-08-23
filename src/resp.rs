@@ -40,6 +40,19 @@ impl From<RespValue> for isize {
     }
 }
 
+impl From<RespValue> for u64 {
+    fn from(value: RespValue) -> Self {
+        match value {
+            RespValue::Integer(u) => u,
+            RespValue::SimpleString(s) => s.parse().unwrap(),
+            RespValue::BulkString(s) => s.parse().unwrap(),
+            _ => {
+                panic!("Cannot convert to isize");
+            }
+        }
+    }
+}
+
 impl From<RespValue> for usize {
     fn from(value: RespValue) -> Self {
         match value {

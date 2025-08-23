@@ -3,6 +3,7 @@ mod resp;
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
+    thread,
     time::Duration,
 };
 
@@ -32,6 +33,8 @@ enum DbGetResult {
     KeyMissing,
     Expired,
 }
+
+const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
 
 impl Db {
     fn new() -> Self {
@@ -255,12 +258,49 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                         RespValue::NullBulkString
                     } else if poped_list.len() == 1 {
                         RespValue::SimpleString(poped_list[0].clone())
-                    }
-                    else {
+                    } else {
                         RespValue::Array(
                             poped_list.into_iter().map(RespValue::BulkString).collect(),
                         )
                     }
+                }
+
+                "BLPOP" => {
+                    let key: String = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("BLPOP command requires a key"))?
+                        .clone()
+                        .into();
+
+                    let timeout: u64 = args.get(1).unwrap_or(&RespValue::Integer(0)).clone().into();
+                    let end_time = if timeout == 0 {
+                        None
+                    } else {
+                        Some(Instant::now() + Duration::from_secs(timeout))
+                    };
+
+                    let resp_value;
+                    loop {
+                        {
+                            let mut db_g = db.lock().await;
+                            let results = db_g.lpop(&key, 1);
+                            if !results.is_empty() {
+                                resp_value = RespValue::Array(
+                                    results.into_iter().map(RespValue::BulkString).collect(),
+                                );
+                                break;
+                            }
+                        }
+
+                        if let Some(end) = end_time {
+                            if Instant::now() > end {
+                                resp_value = RespValue::NullBulkString;
+                                break;
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI));
+                    }
+                    resp_value
                 }
 
                 "LLEN" => {
