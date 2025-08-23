@@ -26,13 +26,6 @@ enum DbValue {
     List(VecDeque<String>),
 }
 
-#[derive(Clone, Debug)]
-enum DbGetResult {
-    Ok(DbValue),
-    KeyMissing,
-    Expired,
-}
-
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
 
 impl Db {
@@ -130,7 +123,7 @@ impl Db {
         self.values.get(key).cloned()
     }
 
-    fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbGetResult {
+    fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbValue {
         if let Some(db_value) = self.values.get(key)
             && let DbValue::List(list) = db_value
         {
@@ -152,10 +145,10 @@ impl Db {
 
             if start < length && start < stop {
                 let stop = stop.min(list.len() - 1);
-                return DbGetResult::Ok(DbValue::List(list.range(start..=stop).cloned().collect()));
+                return DbValue::List(list.range(start..=stop).cloned().collect());
             }
         }
-        DbGetResult::Ok(DbValue::List(VecDeque::new()))
+        DbValue::List(VecDeque::new())
     }
 }
 
@@ -377,7 +370,7 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
 
                     let db_result = db.lock().await.lrange(&key, start, stop);
 
-                    if let DbGetResult::Ok(DbValue::List(l)) = db_result {
+                    if let DbValue::List(l) = db_result {
                         let v = l.into_iter().map(RespValue::BulkString).collect();
                         RespValue::Array(v)
                     } else {
