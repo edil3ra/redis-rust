@@ -3,7 +3,6 @@ mod resp;
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
-    thread,
     time::Duration,
 };
 
@@ -286,19 +285,21 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                             let results = db_g.lpop(&key, 1);
                             if !results.is_empty() {
                                 resp_value = RespValue::Array(
-                                    results.into_iter().map(RespValue::BulkString).collect(),
+                                    std::iter::once(RespValue::BulkString(key))
+                                        .chain(results.into_iter().map(RespValue::BulkString))
+                                        .collect(),
                                 );
                                 break;
                             }
                         }
 
-                        if let Some(end) = end_time {
-                            if Instant::now() > end {
-                                resp_value = RespValue::NullBulkString;
-                                break;
-                            }
+                        if let Some(end) = end_time
+                            && Instant::now() > end
+                        {
+                            resp_value = RespValue::NullBulkString;
+                            break;
                         }
-                        thread::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI));
+                        tokio::time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI)).await;
                     }
                     resp_value
                 }
@@ -405,5 +406,3 @@ async fn main() {
         }
     }
 }
-
-// *2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
