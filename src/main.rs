@@ -43,14 +43,15 @@ impl Db {
         }
     }
 
-    fn insert_atom(&mut self, key: &str, value: String, millis: Option<u64>) {
-        if let Some(millis) = millis {
-            self.expirations.insert(
-                key.to_owned(),
-                Instant::now() + Duration::from_millis(millis),
-            );
-        }
+    fn insert_atom(&mut self, key: &str, value: String) {
         self.values.insert(key.to_owned(), DbValue::Atom(value));
+    }
+
+    fn set_expiration(&mut self, key: &str, millis: u64) {
+        self.expirations.insert(
+            key.to_owned(),
+            Instant::now() + Duration::from_millis(millis),
+        );
     }
 
     fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
@@ -171,15 +172,17 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     arg.cloned()?
                 }
                 "SET" => {
-                    let key_value = args
+                    let key: String = args
                         .first()
-                        .ok_or_else(|| anyhow::anyhow!("SET command requires a key"))?;
-                    let key = key_value.clone();
+                        .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
+                        .clone()
+                        .into();
 
-                    let val_value = args
+                    let value: String = args
                         .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("SET command requires a value"))?;
-                    let value = val_value.clone();
+                        .ok_or_else(|| anyhow::anyhow!("SET command requires a value"))?
+                        .clone()
+                        .into();
 
                     let px: Option<String> = args.get(2).map(|px| px.clone().into());
                     let millis_string: Option<String> = args.get(3).map(|px| px.clone().into());
@@ -201,9 +204,13 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                     } else {
                         None
                     };
-                    db.lock()
-                        .await
-                        .insert_atom(&String::from(key), value.into(), millis_u64);
+                    {
+                        let mut db = db.lock().await;
+                        if let Some(millis_u64) = millis_u64 {
+                            db.set_expiration(&key, millis_u64);
+                        }
+                        db.insert_atom(&key, value.into());
+                    }
                     RespValue::SimpleString("OK".to_string())
                 }
 
