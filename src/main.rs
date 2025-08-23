@@ -112,19 +112,22 @@ impl Db {
         0
     }
 
-    fn get(&mut self, key: &str) -> DbGetResult {
-        if let Some(value) = self.values.get(key) {
-            if let Some(instant) = self.expirations.get(key) {
-                if Instant::now() >= *instant {
-                    return DbGetResult::Expired;
-                } else {
-                    return DbGetResult::Ok(value.clone());
-                }
-            } else {
-                return DbGetResult::Ok(value.clone());
-            }
+    fn is_expired(&mut self, key: &str) -> bool {
+        if let Some(expiration) = self.expirations.get(key)
+            && Instant::now() >= *expiration
+        {
+            return true;
         }
-        DbGetResult::KeyMissing
+        false
+    }
+
+    fn expire(&mut self, key: &str) {
+        self.expirations.remove(key);
+        self.values.remove(key);
+    }
+
+    fn get(&mut self, key: &str) -> Option<DbValue> {
+        self.values.get(key).cloned()
     }
 
     fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbGetResult {
@@ -328,15 +331,28 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
                 }
 
                 "GET" => {
-                    let key: String = args.first().unwrap().clone().into();
-                    let db_result = db.lock().await.get(&key);
-                    match db_result {
-                        DbGetResult::Ok(db_value) => match db_value {
+                    let key: String = args
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("GET command requires a key"))?
+                        .clone()
+                        .into();
+
+                    let (value, is_expired) = {
+                        let mut db_g = db.lock().await;
+                        let is_expired = db_g.is_expired(&key);
+                        let value = db_g.get(&key);
+                        if is_expired {
+                            db_g.expire(&key);
+                        }
+                        (value, is_expired)
+                    };
+
+                    match (value, is_expired) {
+                        (Some(value), false) => match value {
                             DbValue::Atom(v) => RespValue::SimpleString(v.to_string()),
                             DbValue::List(items) => todo!(),
                         },
-                        DbGetResult::KeyMissing => RespValue::NullBulkString,
-                        DbGetResult::Expired => RespValue::NullBulkString,
+                        _ => RespValue::NullBulkString,
                     }
                 }
 
