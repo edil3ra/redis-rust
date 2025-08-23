@@ -190,6 +190,9 @@ enum Command {
         start: isize,
         stop: isize,
     },
+    Type {
+        key: String,
+    },
 }
 
 impl Command {
@@ -277,10 +280,8 @@ impl Command {
 
                 match (value, is_expired) {
                     (Some(value), false) => match value {
-                        DbValue::Atom(v) => Ok(RespValue::BulkString(v.to_string())), 
-                        DbValue::List(_) => {
-                            Ok(RespValue::NullBulkString)
-                        }
+                        DbValue::Atom(v) => Ok(RespValue::BulkString(v.to_string())),
+                        DbValue::List(_) => Ok(RespValue::NullBulkString),
                     },
                     _ => Ok(RespValue::NullBulkString),
                 }
@@ -295,10 +296,20 @@ impl Command {
                     Ok(RespValue::NullBulkString)
                 }
             }
+            Command::Type { key } => {
+                let db_result = db.lock().await.get(&key);
+                if let Some(result) = db_result {
+                    match result {
+                        DbValue::Atom(_) => Ok(RespValue::SimpleString("string".to_string())),
+                        DbValue::List(_) => Ok(RespValue::SimpleString("list".to_string())),
+                    }
+                } else {
+                    Ok(RespValue::SimpleString("none".to_string()))
+                }
+            }
         }
     }
 }
-
 
 fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> {
     match command_name.to_uppercase().as_str() {
@@ -403,7 +414,7 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .clone()
                 .into();
 
-            let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1); 
+            let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1);
 
             if args.len() > 2 {
                 return Err(anyhow::anyhow!("Too many arguments for LPOP command"));
@@ -418,7 +429,7 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .clone()
                 .into();
 
-            let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0); 
+            let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0);
 
             if args.len() > 2 {
                 return Err(anyhow::anyhow!("Too many arguments for BLPOP command"));
@@ -480,6 +491,16 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
 
             Ok(Command::Lrange { key, start, stop })
         }
+        "TYPE" => {
+            let key: String = args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("TYPE command requires a key"))?
+                .clone()
+                .into();
+
+            Ok(Command::Type { key })
+        }
+
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
     }
 }
@@ -488,13 +509,13 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
     let mut handler = resp::RespHandler::new(stream);
 
     loop {
-        let input = handler.read_value().await?; 
+        let input = handler.read_value().await?;
         let response = if let Some(input) = input {
             let (command_name, args) = extract_command(input)?;
             let command = parse_command(command_name, args)?;
-            command.execute(db.clone()).await? 
+            command.execute(db.clone()).await?
         } else {
-            break; 
+            break;
         };
         handler.write_value(response).await?;
     }
@@ -520,7 +541,7 @@ fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
 fn unpack_bulk_str(value: RespValue) -> Result<String> {
     match value {
         RespValue::BulkString(s) => Ok(s),
-        RespValue::SimpleString(s) => Ok(s), 
+        RespValue::SimpleString(s) => Ok(s),
         _ => Err(anyhow::anyhow!(
             "Expected command name to be a bulk or simple string"
         )),
