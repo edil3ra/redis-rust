@@ -277,9 +277,8 @@ impl Command {
 
                 match (value, is_expired) {
                     (Some(value), false) => match value {
-                        DbValue::Atom(v) => Ok(RespValue::BulkString(v.to_string())), // Changed to BulkString for consistency with Redis
+                        DbValue::Atom(v) => Ok(RespValue::BulkString(v.to_string())), 
                         DbValue::List(_) => {
-                            /* TODO: Decide how to handle GET on a list type */
                             Ok(RespValue::NullBulkString)
                         }
                     },
@@ -300,7 +299,7 @@ impl Command {
     }
 }
 
-// --- Helper function to parse input into a Command enum ---
+
 fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> {
     match command_name.to_uppercase().as_str() {
         "PING" => {
@@ -404,7 +403,7 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .clone()
                 .into();
 
-            let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1); // Default count is 1 if not provided
+            let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1); 
 
             if args.len() > 2 {
                 return Err(anyhow::anyhow!("Too many arguments for LPOP command"));
@@ -419,7 +418,7 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .clone()
                 .into();
 
-            let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0); // Default timeout is 0 (blocking indefinitely) if not provided
+            let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0); 
 
             if args.len() > 2 {
                 return Err(anyhow::anyhow!("Too many arguments for BLPOP command"));
@@ -489,232 +488,13 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
     let mut handler = resp::RespHandler::new(stream);
 
     loop {
-        let input = handler.read_value().await.unwrap();
+        let input = handler.read_value().await?; 
         let response = if let Some(input) = input {
-            let (command, args) = extract_command(input)?;
-            match command.to_uppercase().as_str() {
-                "PING" => RespValue::SimpleString("PONG".to_string()),
-                "ECHO" => {
-                    let arg = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("ECHO command requires an argument"));
-                    arg.cloned()?
-                }
-                "SET" => {
-                    let key: String = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
-                        .clone()
-                        .into();
-
-                    let value: String = args
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("SET command requires a value"))?
-                        .clone()
-                        .into();
-
-                    let px: Option<String> = args.get(2).map(|px| px.clone().into());
-                    let millis_string: Option<String> = args.get(3).map(|px| px.clone().into());
-                    let millis_u64: Option<u64> = if let Some(px) = px {
-                        if px.as_str().to_uppercase() == "PX" {
-                            if let Some(m) = millis_string {
-                                let milli = m
-                                    .parse::<u64>()
-                                    .map_err(|e| anyhow::anyhow!("Invalid PX value: {}", e))?;
-                                Some(milli)
-                            } else {
-                                return Err(anyhow::anyhow!("Missing milliseconds value for PX"));
-                            }
-                        } else {
-                            return Err(anyhow::anyhow!(
-                                "Unknown argument after value. Expected 'PX' or end of command."
-                            ));
-                        }
-                    } else {
-                        None
-                    };
-                    {
-                        let mut db = db.lock().await;
-                        if let Some(millis_u64) = millis_u64 {
-                            db.set_expiration(&key, millis_u64);
-                        }
-                        db.insert_atom(&key, value.into());
-                    }
-                    RespValue::SimpleString("OK".to_string())
-                }
-
-                "RPUSH" => {
-                    let key = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
-                        .clone();
-                    if args.len() < 2 {
-                        return Err(anyhow::anyhow!("RPUSH command requires at least one value"));
-                    }
-
-                    let values = args[1..]
-                        .iter()
-                        .map(|resp_value| resp_value.clone().into())
-                        .collect::<Vec<String>>();
-
-                    let length = db.lock().await.rpush(&String::from(key), values);
-                    RespValue::Integer(length)
-                }
-
-                "LPUSH" => {
-                    let key = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
-                        .clone();
-                    if args.len() < 2 {
-                        return Err(anyhow::anyhow!("RPUSH command requires at least one value"));
-                    }
-
-                    let values = args[1..]
-                        .iter()
-                        .map(|resp_value| resp_value.clone().into())
-                        .collect::<Vec<String>>();
-
-                    let length = db.lock().await.lpush(&String::from(key), values);
-                    RespValue::Integer(length)
-                }
-
-                "LPOP" => {
-                    let key = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("LPOP command requires a key"))?
-                        .clone();
-
-                    let length: usize =
-                        args.get(1).unwrap_or(&RespValue::Integer(1)).clone().into();
-
-                    let poped_list = db.lock().await.lpop(&String::from(key), length);
-                    if poped_list.is_empty() {
-                        RespValue::NullBulkString
-                    } else if poped_list.len() == 1 {
-                        RespValue::SimpleString(poped_list[0].clone())
-                    } else {
-                        RespValue::Array(
-                            poped_list.into_iter().map(RespValue::BulkString).collect(),
-                        )
-                    }
-                }
-
-                "BLPOP" => {
-                    let key: String = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("BLPOP command requires a key"))?
-                        .clone()
-                        .into();
-
-                    let timeout: f64 = args
-                        .get(1)
-                        .unwrap_or(&RespValue::BulkString("0".to_string()))
-                        .clone()
-                        .into();
-
-                    let end_time = if timeout == 0. {
-                        None
-                    } else {
-                        Some(Instant::now() + Duration::from_secs_f64(timeout))
-                    };
-
-                    let resp_value;
-                    loop {
-                        {
-                            let mut db_g = db.lock().await;
-                            let results = db_g.lpop(&key, 1);
-                            if !results.is_empty() {
-                                resp_value = RespValue::Array(
-                                    std::iter::once(RespValue::BulkString(key))
-                                        .chain(results.into_iter().map(RespValue::BulkString))
-                                        .collect(),
-                                );
-                                break;
-                            }
-                        }
-
-                        if let Some(end) = end_time
-                            && Instant::now() > end
-                        {
-                            resp_value = RespValue::NullBulkString;
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI))
-                            .await;
-                    }
-                    resp_value
-                }
-
-                "LLEN" => {
-                    let key = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("LLEN command requires a key"))?
-                        .clone();
-
-                    let length = db.lock().await.llen(&String::from(key));
-                    RespValue::Integer(length)
-                }
-
-                "GET" => {
-                    let key: String = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("GET command requires a key"))?
-                        .clone()
-                        .into();
-
-                    let (value, is_expired) = {
-                        let mut db_g = db.lock().await;
-                        let is_expired = db_g.is_expired(&key);
-                        let value = db_g.get(&key);
-                        if is_expired {
-                            db_g.expire(&key);
-                        }
-                        (value, is_expired)
-                    };
-
-                    match (value, is_expired) {
-                        (Some(value), false) => match value {
-                            DbValue::Atom(v) => RespValue::SimpleString(v.to_string()),
-                            DbValue::List(items) => todo!(),
-                        },
-                        _ => RespValue::NullBulkString,
-                    }
-                }
-
-                "LRANGE" => {
-                    let key: String = args
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
-                        .clone()
-                        .into();
-
-                    let start: isize = args
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("LRANGE command require a start value"))?
-                        .clone()
-                        .into();
-
-                    let stop: isize = args
-                        .get(2)
-                        .ok_or_else(|| anyhow::anyhow!("LRANGE command require a stop value"))?
-                        .clone()
-                        .into();
-
-                    let db_result = db.lock().await.lrange(&key, start, stop);
-
-                    if let DbValue::List(l) = db_result {
-                        let v = l.into_iter().map(RespValue::BulkString).collect();
-                        RespValue::Array(v)
-                    } else {
-                        RespValue::NullBulkString
-                    }
-                }
-
-                c => return Err(anyhow::anyhow!("Cannot handle command {}", c)),
-            }
+            let (command_name, args) = extract_command(input)?;
+            let command = parse_command(command_name, args)?;
+            command.execute(db.clone()).await? 
         } else {
-            break;
+            break; 
         };
         handler.write_value(response).await?;
     }
@@ -740,7 +520,7 @@ fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
 fn unpack_bulk_str(value: RespValue) -> Result<String> {
     match value {
         RespValue::BulkString(s) => Ok(s),
-        RespValue::SimpleString(s) => Ok(s), // Allow SimpleString for command names too, for flexibility
+        RespValue::SimpleString(s) => Ok(s), 
         _ => Err(anyhow::anyhow!(
             "Expected command name to be a bulk or simple string"
         )),
