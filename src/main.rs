@@ -24,6 +24,7 @@ struct Db {
 enum DbValue {
     Atom(String),
     List(VecDeque<String>),
+    Stream(HashMap<String, String>),
 }
 
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
@@ -36,8 +37,8 @@ impl Db {
         }
     }
 
-    fn insert_atom(&mut self, key: &str, value: String) {
-        self.values.insert(key.to_owned(), DbValue::Atom(value));
+    fn insert(&mut self, key: &str, value: DbValue) {
+        self.values.insert(key.to_owned(), value);
     }
 
     fn set_expiration(&mut self, key: &str, millis: u64) {
@@ -195,6 +196,8 @@ enum Command {
     },
     Xadd {
         key: String,
+        id: String,
+        field_value_pairs: Vec<(String, String)>,
     },
 }
 
@@ -212,7 +215,7 @@ impl Command {
                 if let Some(millis) = expiry_millis {
                     db.set_expiration(&key, millis);
                 }
-                db.insert_atom(&key, value);
+                db.insert(&key, DbValue::Atom(value));
                 Ok(RespValue::SimpleString("OK".to_string()))
             }
             Command::Rpush { key, values } => {
@@ -285,6 +288,7 @@ impl Command {
                     (Some(value), false) => match value {
                         DbValue::Atom(v) => Ok(RespValue::BulkString(v.to_string())),
                         DbValue::List(_) => Ok(RespValue::NullBulkString),
+                        DbValue::Stream(_) => Ok(RespValue::NullBulkString),
                     },
                     _ => Ok(RespValue::NullBulkString),
                 }
@@ -305,13 +309,26 @@ impl Command {
                     match result {
                         DbValue::Atom(_) => Ok(RespValue::SimpleString("string".to_string())),
                         DbValue::List(_) => Ok(RespValue::SimpleString("list".to_string())),
+                        DbValue::Stream(_) => Ok(RespValue::SimpleString("stream".to_string())),
                     }
                 } else {
                     Ok(RespValue::SimpleString("none".to_string()))
                 }
             }
-            Command::Xadd { key } => {
-                
+            Command::Xadd {
+                key,
+                id,
+                field_value_pairs,
+            } => {
+                db.lock().await.insert(
+                    &key,
+                    DbValue::Stream(
+                        field_value_pairs
+                            .into_iter()
+                            .collect::<HashMap<String, String>>(),
+                    ),
+                );
+                Ok(RespValue::SimpleString(id))
             }
         }
     }
@@ -519,9 +536,29 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .clone()
                 .into();
 
-            args[2..].iter().next_chunk()
+            let remaining_args = &args[2..];
+            dbg!(&remaining_args.len());
 
-            
+            if !remaining_args.len().is_multiple_of(2) {
+                return Err(anyhow::anyhow!(
+                    "XADD command requires an even number of field-value pairs"
+                ));
+            }
+
+            let field_value_pairs: Vec<(String, String)> = remaining_args
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let field: String = chunk[0].clone().into();
+                    let value: String = chunk[1].clone().into();
+                    (field, value)
+                })
+                .collect();
+
+            Ok(Command::Xadd {
+                key,
+                id,
+                field_value_pairs,
+            })
         }
 
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
