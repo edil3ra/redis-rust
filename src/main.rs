@@ -193,6 +193,9 @@ enum Command {
     Type {
         key: String,
     },
+    Xadd {
+        key: String,
+    },
 }
 
 impl Command {
@@ -306,6 +309,9 @@ impl Command {
                 } else {
                     Ok(RespValue::SimpleString("none".to_string()))
                 }
+            }
+            Command::Xadd { key } => {
+                
             }
         }
     }
@@ -499,6 +505,23 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .into();
 
             Ok(Command::Type { key })
+        }
+        "XADD" => {
+            let key: String = args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("XADD command requires a key"))?
+                .clone()
+                .into();
+
+            let id: String = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("XADD command requires an id"))?
+                .clone()
+                .into();
+
+            args[2..].iter().next_chunk()
+
+            
         }
 
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
