@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, bail};
 
@@ -183,33 +187,46 @@ impl Command {
                 let new_id = if let Some(DbValue::Stream(stream_list)) = db.lock().await.get(&key) {
                     let (last_ms_time, last_seq_num) =
                         stream_list.0.last().unwrap().id.split_once("-").unwrap();
-                    let last_timestamp: u64 = last_ms_time.parse().unwrap();
+                    let last_timestamp: u128 = last_ms_time.parse().unwrap();
                     let last_sequence_number: u64 = last_seq_num.parse().unwrap_or_default();
 
-                    let (timestamp_str, sequence_str) = id
-                        .split_once("-")
-                        .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
-                    let timestamp: i64 = timestamp_str
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
-                    let sequence_number: i64 =
-                        if sequence_str == "*"  {
-                            if last_timestamp == timestamp as u64 {
-                                (last_sequence_number + 1) as i64
-                            } else {
-                                0
-                            }
+                    let (timestamp_str, sequence_str) = {
+                        if id == "*" {
+                            ("*", "*")
                         } else {
-                            sequence_str
-                                .parse()
-                                .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
-                        };
-                    if timestamp <= 0 && sequence_number <= 0 {
+                            id.split_once("-")
+                                .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?
+                        }
+                    };
+
+                    let timestamp = if timestamp_str == "*" {
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_millis()
+                    } else {
+                        timestamp_str
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
+                    };
+
+                    let sequence_number: i64 = if sequence_str == "*" {
+                        if last_timestamp == timestamp {
+                            (last_sequence_number + 1) as i64
+                        } else {
+                            0
+                        }
+                    } else {
+                        sequence_str
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
+                    };
+                    if timestamp as i64 <= 0 && sequence_number <= 0 {
                         bail!("ERR The ID specified in XADD must be greater than 0-0")
                     }
 
-                    if (timestamp as u64) < last_timestamp
-                        || ((timestamp as u64) == last_timestamp
+                    if (timestamp) < last_timestamp
+                        || ((timestamp) == last_timestamp
                             && (sequence_number as u64) <= last_sequence_number)
                     {
                         bail!(
@@ -218,14 +235,32 @@ impl Command {
                     }
                     format!("{timestamp}-{sequence_number}")
                 } else {
-                    let (timestamp_str, sequence_str) = id
-                        .split_once("-")
-                        .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
-                    let timestamp: i64 = timestamp_str
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
+                    let (timestamp_str, sequence_str) = {
+                        if id == "*" {
+                            ("*", "*")
+                        } else {
+                            id.split_once("-")
+                                .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?
+                        }
+                    };
+
+                    let timestamp = if timestamp_str == "*" {
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_millis()
+                    } else {
+                        timestamp_str
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
+                    };
+
                     let sequence_number: i64 = if sequence_str == "*" {
-                        1
+                        if timestamp_str == "*" {
+                            0
+                        } else {
+                            1
+                        }
                     } else {
                         sequence_str
                             .parse()
@@ -241,7 +276,7 @@ impl Command {
                         .into_iter()
                         .collect::<HashMap<String, String>>(),
                 );
-                Ok(RespValue::SimpleString(new_id))
+                Ok(RespValue::BulkString(new_id))
             }
         }
     }
