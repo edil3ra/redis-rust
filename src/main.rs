@@ -1,12 +1,10 @@
+mod db;
 mod resp;
 
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Result, bail};
+use db::*;
 use resp::RespValue;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -14,168 +12,7 @@ use tokio::{
     time::{self, Instant},
 };
 
-#[derive(Debug)]
-struct Db {
-    values: HashMap<String, DbValue>,
-    expirations: HashMap<String, Instant>,
-}
-
-#[derive(Clone, Debug)]
-enum DbValue {
-    Atom(String),
-    List(VecDeque<String>),
-    Stream(StreamList),
-}
-
-#[derive(Clone, Debug)]
-struct StreamList(Vec<StreamItem>);
-
-#[derive(Clone, Debug)]
-struct StreamItem {
-    id: String,
-    values: HashMap<String, String>,
-}
-
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
-
-impl Db {
-    fn new() -> Self {
-        Self {
-            values: HashMap::new(),
-            expirations: HashMap::new(),
-        }
-    }
-
-    fn insert(&mut self, key: &str, value: DbValue) {
-        self.values.insert(key.to_owned(), value);
-    }
-
-    fn set_expiration(&mut self, key: &str, millis: u64) {
-        self.expirations.insert(
-            key.to_owned(),
-            Instant::now() + Duration::from_millis(millis),
-        );
-    }
-
-    fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
-        }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-        {
-            list.extend(values);
-            return list.len() as u64;
-        }
-        0
-    }
-
-    fn lpush(&mut self, key: &str, values: Vec<String>) -> u64 {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
-        }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-        {
-            for value in values.into_iter() {
-                list.push_front(value);
-            }
-            return list.len() as u64;
-        }
-        0
-    }
-
-    fn lpop(&mut self, key: &str, length: usize) -> Vec<String> {
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-            && !list.is_empty()
-        {
-            let mut poped_list: Vec<String> = Vec::new();
-            for _ in 0..length {
-                let value = list.pop_front();
-                if let Some(value) = value {
-                    poped_list.push(value);
-                } else {
-                    break;
-                }
-            }
-            return poped_list;
-        }
-        vec![]
-    }
-
-    fn llen(&mut self, key: &str) -> u64 {
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-        {
-            return list.len() as u64;
-        }
-        0
-    }
-
-    fn is_expired(&mut self, key: &str) -> bool {
-        if let Some(expiration) = self.expirations.get(key)
-            && Instant::now() >= *expiration
-        {
-            return true;
-        }
-        false
-    }
-
-    fn expire(&mut self, key: &str) {
-        self.expirations.remove(key);
-        self.values.remove(key);
-    }
-
-    fn get(&mut self, key: &str) -> Option<DbValue> {
-        self.values.get(key).cloned()
-    }
-
-    fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbValue {
-        if let Some(db_value) = self.values.get(key)
-            && let DbValue::List(list) = db_value
-        {
-            let length = list.len();
-
-            let start = if start < 0 {
-                length as isize + start
-            } else {
-                start
-            }
-            .max(0) as usize;
-
-            let stop = if stop < 0 {
-                length as isize + stop
-            } else {
-                stop
-            }
-            .max(0) as usize;
-
-            if start < length && start < stop {
-                let stop = stop.min(list.len() - 1);
-                return DbValue::List(list.range(start..=stop).cloned().collect());
-            }
-        }
-        DbValue::List(VecDeque::new())
-    }
-
-    fn xadd(&mut self, key: &str, id: &str, values: HashMap<String, String>) {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::Stream(StreamList(vec![])));
-        }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::Stream(stream) = db_value
-        {
-            stream.0.push(StreamItem {
-                id: id.into(),
-                values,
-            });
-        }
-    }
-}
 
 // --- New Command Enum ---
 enum Command {
