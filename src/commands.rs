@@ -1,18 +1,16 @@
-mod db;
-mod resp;
-
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Result, bail};
-use db::*;
-use resp::RespValue;
+
 use tokio::{
-    net::{TcpListener, TcpStream},
     sync::Mutex,
     time::{self, Instant},
 };
 
-use crate::db::{Db, DbValue};
+use crate::{
+    db::{Db, DbValue},
+    resp::RespValue,
+};
 
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
 
@@ -182,24 +180,34 @@ impl Command {
                 id,
                 field_value_pairs,
             } => {
-                let (timestamp_str, sequence_str) = id
-                    .split_once("-")
-                    .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
-                let timestamp: i64 = timestamp_str
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
-                let sequence_number: i64 = sequence_str
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("sequence is not a valid number"))?;
-
-                if let Some(DbValue::Stream(stream_list)) = db.lock().await.get(&key) {
-                    if timestamp <= 0 && sequence_number <= 0 {
-                        bail!("ERR The ID specified in XADD must be greater than 0-0")
-                    }
+                let new_id = if let Some(DbValue::Stream(stream_list)) = db.lock().await.get(&key) {
                     let (last_ms_time, last_seq_num) =
                         stream_list.0.last().unwrap().id.split_once("-").unwrap();
                     let last_timestamp: u64 = last_ms_time.parse().unwrap();
-                    let last_sequence_number: u64 = last_seq_num.parse().unwrap();
+                    let last_sequence_number: u64 = last_seq_num.parse().unwrap_or_default();
+
+                    let (timestamp_str, sequence_str) = id
+                        .split_once("-")
+                        .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
+                    let timestamp: i64 = timestamp_str
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
+                    let sequence_number: i64 =
+                        if sequence_str == "*"  {
+                            if last_timestamp == timestamp as u64 {
+                                (last_sequence_number + 1) as i64
+                            } else {
+                                0
+                            }
+                        } else {
+                            sequence_str
+                                .parse()
+                                .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
+                        };
+                    if timestamp <= 0 && sequence_number <= 0 {
+                        bail!("ERR The ID specified in XADD must be greater than 0-0")
+                    }
+
                     if (timestamp as u64) < last_timestamp
                         || ((timestamp as u64) == last_timestamp
                             && (sequence_number as u64) <= last_sequence_number)
@@ -208,16 +216,32 @@ impl Command {
                             "ERR The ID specified in XADD is equal or smaller than the target stream top item"
                         )
                     }
-                }
+                    format!("{timestamp}-{sequence_number}")
+                } else {
+                    let (timestamp_str, sequence_str) = id
+                        .split_once("-")
+                        .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
+                    let timestamp: i64 = timestamp_str
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
+                    let sequence_number: i64 = if sequence_str == "*" {
+                        1
+                    } else {
+                        sequence_str
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
+                    };
+                    format!("{timestamp}-{sequence_number}")
+                };
 
                 db.lock().await.xadd(
                     &key,
-                    &id,
+                    &new_id,
                     field_value_pairs
                         .into_iter()
                         .collect::<HashMap<String, String>>(),
                 );
-                Ok(RespValue::SimpleString(id))
+                Ok(RespValue::SimpleString(new_id))
             }
         }
     }
