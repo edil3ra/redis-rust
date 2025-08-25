@@ -8,6 +8,7 @@ use tokio::{
 #[derive(Clone, Debug)]
 pub enum RespValue {
     SimpleString(String),
+    SimpleError(String),
     Integer(u64),
     BulkString(String),
     NullBulkString,
@@ -81,6 +82,7 @@ impl RespValue {
     pub fn serialize(self) -> String {
         match self {
             RespValue::SimpleString(s) => format!("+{s}\r\n"),
+            RespValue::SimpleError(s) => format!("-{s}\r\n"),
             RespValue::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
             RespValue::NullBulkString => "$-1\r\n".to_string(),
             RespValue::Integer(v) => format!(":{v}\r\n"),

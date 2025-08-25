@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use resp::RespValue;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -24,7 +24,16 @@ struct Db {
 enum DbValue {
     Atom(String),
     List(VecDeque<String>),
-    Stream(HashMap<String, String>),
+    Stream(StreamList),
+}
+
+#[derive(Clone, Debug)]
+struct StreamList(Vec<StreamItem>);
+
+#[derive(Clone, Debug)]
+struct StreamItem {
+    id: String,
+    values: HashMap<String, String>,
 }
 
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
@@ -150,6 +159,21 @@ impl Db {
             }
         }
         DbValue::List(VecDeque::new())
+    }
+
+    fn xadd(&mut self, key: &str, id: &str, values: HashMap<String, String>) {
+        if !self.values.contains_key(key) {
+            self.values
+                .insert(key.to_owned(), DbValue::Stream(StreamList(vec![])));
+        }
+        if let Some(db_value) = self.values.get_mut(key)
+            && let DbValue::Stream(stream) = db_value
+        {
+            stream.0.push(StreamItem {
+                id: id.into(),
+                values,
+            });
+        }
     }
 }
 
@@ -320,13 +344,40 @@ impl Command {
                 id,
                 field_value_pairs,
             } => {
-                db.lock().await.insert(
+                let (timestamp_str, sequence_str) = id
+                    .split_once("-")
+                    .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?;
+                let timestamp: i64 = timestamp_str
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?;
+                let sequence_number: i64 = sequence_str
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("sequence is not a valid number"))?;
+
+                if let Some(DbValue::Stream(stream_list)) = db.lock().await.get(&key) {
+                    if timestamp <= 0 && sequence_number <= 0 {
+                        bail!("ERR The ID specified in XADD must be greater than 0-0")
+                    }
+                    let (last_ms_time, last_seq_num) =
+                        stream_list.0.last().unwrap().id.split_once("-").unwrap();
+                    let last_timestamp: u64 = last_ms_time.parse().unwrap();
+                    let last_sequence_number: u64 = last_seq_num.parse().unwrap();
+                    if (timestamp as u64) < last_timestamp
+                        || ((timestamp as u64) == last_timestamp
+                            && (sequence_number as u64) <= last_sequence_number)
+                    {
+                        bail!(
+                            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                        )
+                    }
+                }
+
+                db.lock().await.xadd(
                     &key,
-                    DbValue::Stream(
-                        field_value_pairs
-                            .into_iter()
-                            .collect::<HashMap<String, String>>(),
-                    ),
+                    &id,
+                    field_value_pairs
+                        .into_iter()
+                        .collect::<HashMap<String, String>>(),
                 );
                 Ok(RespValue::SimpleString(id))
             }
@@ -537,7 +588,6 @@ fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> 
                 .into();
 
             let remaining_args = &args[2..];
-            dbg!(&remaining_args.len());
 
             if !remaining_args.len().is_multiple_of(2) {
                 return Err(anyhow::anyhow!(
@@ -573,7 +623,10 @@ async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {
         let response = if let Some(input) = input {
             let (command_name, args) = extract_command(input)?;
             let command = parse_command(command_name, args)?;
-            command.execute(db.clone()).await?
+            match command.execute(db.clone()).await {
+                Ok(resp_value) => resp_value,
+                Err(e) => RespValue::SimpleError(format!("{e}")),
+            }
         } else {
             break;
         };
