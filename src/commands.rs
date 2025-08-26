@@ -209,16 +209,31 @@ impl Command {
                 );
                 Ok(RespValue::BulkString(new_id))
             }
-            Command::Xrange { key, start, end } => {
+            Command::Xrange {
+                key,
+                start: start_opt,
+                end: end_opt,
+            } => {
                 let mut db = db.lock().await;
-                let start = start.unwrap_or_else(|| "".to_string());
-                let end = if end.is_none()
+                let start = if let Some(start) = start_opt {
+                    if start == "-"
+                        && let Some(value) = db.get(&key)
+                        && let DbValue::Stream(stream) = value
+                    {
+                        stream.0.first().unwrap().id.clone()
+                    } else {
+                        start
+                    }
+                } else {
+                    "".to_string()
+                };
+                let end = if end_opt.is_none()
                     && let Some(value) = db.get(&key)
                     && let DbValue::Stream(stream) = value
                 {
                     stream.0.last().unwrap().id.clone()
                 } else {
-                    end.unwrap()
+                    end_opt.unwrap()
                 };
 
                 let streams = db.xrange(&key, &start, &end);
