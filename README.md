@@ -1,34 +1,57 @@
-[![progress-banner](https://backend.codecrafters.io/progress/redis/c09d5f58-24c5-4746-9a3e-210ad210c85c)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Redis Clone in Rust
 
-This is a starting point for Rust solutions to the
-["Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis).
+This project is a Redis clone implemented in Rust, developed as part of the CodeCrafters "Build Your Own Redis" challenge. It aims to replicate the behavior of a Redis server, handling various commands and managing data in memory.
 
-In this challenge, you'll build a toy Redis clone that's capable of handling
-basic commands like `PING`, `SET` and `GET`. Along the way we'll learn about
-event loops, the Redis protocol and more.
+## Project Structure
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+*   **`src/main.rs`**: The main entry point of the application. It sets up the TCP listener, accepts incoming client connections, and spawns asynchronous tasks to handle each connection.
+*   **`src/commands.rs`**: Defines the `Command` enum, which represents all supported Redis commands. It includes the `execute` method for each command, containing the core logic for processing requests and interacting with the database. It also handles parsing raw RESP data into `Command` structs.
+*   **`src/db.rs`**: Manages the in-memory data store. It defines `Db`, `DbValue` (for different data types like strings, lists, and streams), `StreamList`, and `StreamItem`. It provides methods for database operations such as `SET`, `GET`, `RPUSH`, `LPUSH`, `LPOP`, `LLEN`, `LRANGE`, `XADD`, and `XRANGE`, including expiration handling for keys.
+*   **`src/resp.rs`**: Implements the Redis Serialization Protocol (RESP) for communication. It contains the `RespValue` enum to represent various RESP data types and methods for serializing these values into bytes to be sent over the network, as well as parsing incoming bytes from the client into `RespValue`s.
 
-# Passing the first stage
+## How to Run
 
-The entry point for your Redis implementation is in `src/main.rs`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
+To run this Redis server:
 
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
-```
+1.  **Ensure Rust is installed**: Make sure you have the Rust toolchain (including Cargo) installed on your system. If not, you can install it via `rustup`.
+2.  **Build the project**: Navigate to the root directory of the project in your terminal and run:
+    ```bash
+    cargo build
+    ```
+3.  **Start the server**: Execute the provided script to run your server:
+    ```bash
+    ./your_program.sh
+    ```
+    The server will start listening on `127.0.0.1:6379`.
 
-That's all!
+## Testing with `redis-cli`
 
-# Stage 2 & beyond
+You can interact with your running Redis clone using the official `redis-cli` tool:
 
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cargo (1.88)` installed locally
-1. Run `./your_program.sh` to run your Redis server, which is implemented in
-   `src/main.rs`. This command compiles your Rust project, so it might be slow
-   the first time you run it. Subsequent runs will be fast.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+1.  **Connect to the server**:
+    ```bash
+    redis-cli -p 6379
+    ```
+2.  **Try some commands**:
+    ```
+    127.0.0.1:6379> PING
+    PONG
+    127.0.0.1:6379> SET mykey myvalue PX 10000
+    OK
+    127.0.0.1:6379> GET mykey
+    "myvalue"
+    127.0.0.1:6379> RPUSH mylist item1 item2 item3
+    (integer) 3
+    127.0.0.1:6379> LRANGE mylist 0 -1
+    1) "item1"
+    2) "item2"
+    3) "item3"
+    127.0.0.1:6379> XADD mystream * temperature 25 humidity 80
+    "1701000000000-0"
+    127.0.0.1:6379> XRANGE mystream - +
+    1) 1) "1701000000000-0"
+       2) 1) "temperature"
+          2) "25"
+          3) "humidity"
+          4) "80"
+    ```
