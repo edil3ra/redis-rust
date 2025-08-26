@@ -2,16 +2,15 @@ mod commands;
 mod db;
 mod resp;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use commands::*;
 use db::*;
 use resp::RespValue;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
-    time::{self, Instant},
 };
 
 async fn handle_conn(stream: TcpStream, db: Arc<Mutex<Db>>) -> Result<()> {

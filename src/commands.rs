@@ -63,6 +63,11 @@ pub enum Command {
         id: String,
         field_value_pairs: Vec<(String, String)>,
     },
+    Xrange {
+        key: String,
+        start: Option<String>,
+        end: Option<String>,
+    },
 }
 
 impl Command {
@@ -256,11 +261,7 @@ impl Command {
                     };
 
                     let sequence_number: i64 = if sequence_str == "*" {
-                        if timestamp_str == "*" {
-                            0
-                        } else {
-                            1
-                        }
+                        if timestamp_str == "*" { 0 } else { 1 }
                     } else {
                         sequence_str
                             .parse()
@@ -277,6 +278,46 @@ impl Command {
                         .collect::<HashMap<String, String>>(),
                 );
                 Ok(RespValue::BulkString(new_id))
+            }
+            Command::Xrange { key, start, end } => {
+                {
+                    let mut db = db.lock().await;
+                    let start = start.unwrap_or_else(|| "".to_string());
+                    let end = if end.is_none()
+                        && let Some(value) = db.get(&key)
+                        && let DbValue::Stream(stream) = value
+                    {
+                        stream.0.last().unwrap().id.clone()
+                    } else {
+                        end.unwrap()
+                    };
+
+                    let streams = db.xrange(&key, &start, &end);
+
+                    let resp = streams
+                        .iter()
+                        .map(|item| {
+                            let values_array_items: Vec<RespValue> = item
+                                .values
+                                .iter()
+                                .flat_map(|(key, value)| {
+                                    vec![
+                                        RespValue::BulkString(key.clone()),
+                                        RespValue::BulkString(value.clone()),
+                                    ]
+                                })
+                                .collect();
+
+                            let inner_values_resp_array = RespValue::Array(values_array_items);
+
+                            RespValue::Array(vec![
+                                RespValue::BulkString(item.id.clone()),
+                                inner_values_resp_array,
+                            ])
+                        })
+                        .collect::<Vec<RespValue>>();
+                    Ok(RespValue::Array(resp))
+                }
             }
         }
     }
@@ -508,6 +549,18 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
             })
         }
 
+        "XRANGE" => {
+            let key: String = args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("XRANGE command requires a key"))?
+                .clone()
+                .into();
+
+            let start = args.get(1).map(|s| s.clone().into());
+            let end = args.get(1).map(|s| s.clone().into());
+
+            Ok(Command::Xrange { key, start, end })
+        }
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
     }
 }

@@ -164,4 +164,22 @@ impl Db {
             });
         }
     }
+
+    pub fn xrange(&mut self, key: &str, start: &str, end: &str) -> &[StreamItem] {
+        if let Some(value) = self.values.get(key)
+            && let DbValue::Stream(stream_list) = value
+        {
+            let first_index = stream_list
+                .0
+                .binary_search_by_key(&start, |stream_item| &stream_item.id)
+                .unwrap();
+
+            let last_index = stream_list
+                .0
+                .binary_search_by_key(&end, |stream_item| &stream_item.id)
+                .unwrap();
+            return &stream_list.0[first_index..=last_index+1];
+        }
+        &[]
+    }
 }
