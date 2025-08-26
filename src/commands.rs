@@ -557,7 +557,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 .into();
 
             let start = args.get(1).map(|s| s.clone().into());
-            let end = args.get(1).map(|s| s.clone().into());
+            let end = args.get(2).map(|s| s.clone().into());
 
             Ok(Command::Xrange { key, start, end })
         }

@@ -178,7 +178,7 @@ impl Db {
                 .0
                 .binary_search_by_key(&end, |stream_item| &stream_item.id)
                 .unwrap();
-            return &stream_list.0[first_index..=last_index+1];
+            return &stream_list.0[first_index..=last_index];
         }
         &[]
     }
