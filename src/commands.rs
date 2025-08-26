@@ -232,6 +232,12 @@ impl Command {
                     && let DbValue::Stream(stream) = value
                 {
                     stream.0.last().unwrap().id.clone()
+                } else if let Some(ref end) = end_opt
+                    && end == "+"
+                    && let Some(value) = db.get(&key)
+                    && let DbValue::Stream(stream) = value
+                {
+                    stream.0.last().unwrap().id.clone()
                 } else {
                     end_opt.unwrap()
                 };
