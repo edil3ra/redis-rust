@@ -189,88 +189,18 @@ impl Command {
                 id,
                 field_value_pairs,
             } => {
-                let new_id = if let Some(DbValue::Stream(stream_list)) = db.lock().await.get(&key) {
-                    let (last_ms_time, last_seq_num) =
-                        stream_list.0.last().unwrap().id.split_once("-").unwrap();
-                    let last_timestamp: u128 = last_ms_time.parse().unwrap();
-                    let last_sequence_number: u64 = last_seq_num.parse().unwrap_or_default();
+                let mut db_g = db.lock().await;
 
-                    let (timestamp_str, sequence_str) = {
-                        if id == "*" {
-                            ("*", "*")
-                        } else {
-                            id.split_once("-")
-                                .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?
-                        }
-                    };
-
-                    let timestamp = if timestamp_str == "*" {
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_millis()
-                    } else {
-                        timestamp_str
-                            .parse()
-                            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
-                    };
-
-                    let sequence_number: i64 = if sequence_str == "*" {
-                        if last_timestamp == timestamp {
-                            (last_sequence_number + 1) as i64
-                        } else {
-                            0
-                        }
-                    } else {
-                        sequence_str
-                            .parse()
-                            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
-                    };
-                    if timestamp as i64 <= 0 && sequence_number <= 0 {
-                        bail!("ERR The ID specified in XADD must be greater than 0-0")
-                    }
-
-                    if (timestamp) < last_timestamp
-                        || ((timestamp) == last_timestamp
-                            && (sequence_number as u64) <= last_sequence_number)
-                    {
-                        bail!(
-                            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-                        )
-                    }
-                    format!("{timestamp}-{sequence_number}")
+                let last_item_id_option = if let Some(DbValue::Stream(stream_list)) = db_g.get(&key)
+                {
+                    stream_list.0.last().map(|item| item.id.clone())
                 } else {
-                    let (timestamp_str, sequence_str) = {
-                        if id == "*" {
-                            ("*", "*")
-                        } else {
-                            id.split_once("-")
-                                .ok_or_else(|| anyhow::anyhow!("Invalid stream Id format {id}"))?
-                        }
-                    };
-
-                    let timestamp = if timestamp_str == "*" {
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_millis()
-                    } else {
-                        timestamp_str
-                            .parse()
-                            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
-                    };
-
-                    let sequence_number: i64 = if sequence_str == "*" {
-                        if timestamp_str == "*" { 0 } else { 1 }
-                    } else {
-                        sequence_str
-                            .parse()
-                            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
-                    };
-                    format!("{timestamp}-{sequence_number}")
+                    None
                 };
 
-                db.lock().await.xadd(
+                let new_id = derive_new_stream_id(&id, last_item_id_option.as_ref())?;
+
+                db_g.xadd(
                     &key,
                     &new_id,
                     field_value_pairs
@@ -280,44 +210,42 @@ impl Command {
                 Ok(RespValue::BulkString(new_id))
             }
             Command::Xrange { key, start, end } => {
+                let mut db = db.lock().await;
+                let start = start.unwrap_or_else(|| "".to_string());
+                let end = if end.is_none()
+                    && let Some(value) = db.get(&key)
+                    && let DbValue::Stream(stream) = value
                 {
-                    let mut db = db.lock().await;
-                    let start = start.unwrap_or_else(|| "".to_string());
-                    let end = if end.is_none()
-                        && let Some(value) = db.get(&key)
-                        && let DbValue::Stream(stream) = value
-                    {
-                        stream.0.last().unwrap().id.clone()
-                    } else {
-                        end.unwrap()
-                    };
+                    stream.0.last().unwrap().id.clone()
+                } else {
+                    end.unwrap()
+                };
 
-                    let streams = db.xrange(&key, &start, &end);
+                let streams = db.xrange(&key, &start, &end);
 
-                    let resp = streams
-                        .iter()
-                        .map(|item| {
-                            let values_array_items: Vec<RespValue> = item
-                                .values
-                                .iter()
-                                .flat_map(|(key, value)| {
-                                    vec![
-                                        RespValue::BulkString(key.clone()),
-                                        RespValue::BulkString(value.clone()),
-                                    ]
-                                })
-                                .collect();
+                let resp = streams
+                    .iter()
+                    .map(|item| {
+                        let values_array_items: Vec<RespValue> = item
+                            .values
+                            .iter()
+                            .flat_map(|(key, value)| {
+                                vec![
+                                    RespValue::BulkString(key.clone()),
+                                    RespValue::BulkString(value.clone()),
+                                ]
+                            })
+                            .collect();
 
-                            let inner_values_resp_array = RespValue::Array(values_array_items);
+                        let inner_values_resp_array = RespValue::Array(values_array_items);
 
-                            RespValue::Array(vec![
-                                RespValue::BulkString(item.id.clone()),
-                                inner_values_resp_array,
-                            ])
-                        })
-                        .collect::<Vec<RespValue>>();
-                    Ok(RespValue::Array(resp))
-                }
+                        RespValue::Array(vec![
+                            RespValue::BulkString(item.id.clone()),
+                            inner_values_resp_array,
+                        ])
+                    })
+                    .collect::<Vec<RespValue>>();
+                Ok(RespValue::Array(resp))
             }
         }
     }
@@ -563,6 +491,74 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         }
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
     }
+}
+
+fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -> Result<String> {
+    let (last_ms_time, last_seq_num) = if let Some(last_id_str) = last_item_id {
+        let (ms_str, seq_str) = last_id_str
+            .split_once('-')
+            .ok_or_else(|| anyhow::anyhow!("Invalid last stream ID format: {}", last_id_str))?;
+        (ms_str.parse::<u128>()?, seq_str.parse::<u64>()?)
+    } else {
+        (0, 0)
+    };
+
+    let (requested_timestamp_part, requested_sequence_part) = if requested_id_str == "*" {
+        ("*", "*")
+    } else {
+        requested_id_str
+            .split_once("-")
+            .ok_or_else(|| anyhow::anyhow!("Invalid stream ID format: {}", requested_id_str))?
+    };
+
+    let current_system_time_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis();
+
+    let new_timestamp: u128 = if requested_timestamp_part == "*" {
+        current_system_time_millis
+    } else {
+        requested_timestamp_part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
+    };
+
+    let new_sequence_number: u64 = if requested_sequence_part == "*" {
+        if last_item_id.is_some() {
+            if new_timestamp == last_ms_time {
+                last_seq_num + 1
+            } else {
+                0
+            }
+        } else {
+            if requested_timestamp_part == "*" {
+                0
+            } else {
+                1
+            }
+        }
+    } else {
+        requested_sequence_part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
+    };
+
+    if new_timestamp == 0 && new_sequence_number == 0 {
+        bail!("ERR The ID specified in XADD must be greater than 0-0")
+    }
+
+    if last_item_id.is_some() {
+        if new_timestamp < last_ms_time
+            || (new_timestamp == last_ms_time && new_sequence_number <= last_seq_num)
+        {
+            bail!(
+                "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+            )
+        }
+    }
+
+    Ok(format!("{new_timestamp}-{new_sequence_number}"))
 }
 
 pub fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
