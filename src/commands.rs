@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbValue},
+    db::{Db, DbValue, StreamList},
     resp::RespValue,
 };
 
@@ -214,35 +214,46 @@ impl Command {
                 start: start_opt,
                 end: end_opt,
             } => {
-                let mut db = db.lock().await;
-                let start = if let Some(start) = start_opt {
-                    if start == "-"
-                        && let Some(value) = db.get(&key)
-                        && let DbValue::Stream(stream) = value
-                    {
-                        stream.0.first().unwrap().id.clone()
+                let mut db_g = db.lock().await;
+
+                let stream_list: Option<StreamList> =
+                    if let Some(DbValue::Stream(stream_list)) = db_g.get(&key) {
+                        Some(stream_list)
                     } else {
-                        start
+                        None
+                    };
+
+                let start_id = start_opt.map_or_else(
+                    || "".to_string(),
+                    |start_val| {
+                        if start_val == "-" {
+                            stream_list
+                                .clone()
+                                .map(|stream| stream.0.first().unwrap().id.clone())
+                                .unwrap_or_else(|| start_val.clone())
+                        } else {
+                            start_val
+                        }
+                    },
+                );
+
+                let end_id = match end_opt {
+                    Some(end_val) => {
+                        if end_val == "+" {
+                            stream_list
+                                .clone()
+                                .map(|stream| stream.0.last().unwrap().id.clone())
+                                .unwrap_or_else(|| end_val.clone())
+                        } else {
+                            end_val
+                        }
                     }
-                } else {
-                    "".to_string()
-                };
-                let end = if end_opt.is_none()
-                    && let Some(value) = db.get(&key)
-                    && let DbValue::Stream(stream) = value
-                {
-                    stream.0.last().unwrap().id.clone()
-                } else if let Some(ref end) = end_opt
-                    && end == "+"
-                    && let Some(value) = db.get(&key)
-                    && let DbValue::Stream(stream) = value
-                {
-                    stream.0.last().unwrap().id.clone()
-                } else {
-                    end_opt.unwrap()
+                    None => stream_list
+                        .map(|stream| stream.0.last().unwrap().id.clone())
+                        .unwrap_or_else(|| "+".to_string()),
                 };
 
-                let streams = db.xrange(&key, &start, &end);
+                let streams = db_g.xrange(&key, &start_id, &end_id);
 
                 let resp = streams
                     .iter()
