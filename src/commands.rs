@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbValue, StreamList, DbError}, // Add DbError here
+    db::{Db, DbError, DbValue, StreamList}, // Add DbError here
     resp::RespValue,
 };
 
@@ -257,8 +257,8 @@ impl Command {
                         .unwrap_or_else(|| "+".to_string()),
                 };
 
-                // Call xrange, mapping DbError to anyhow::Error
-                let streams = db_g.xrange(&key, &start_id, &end_id)
+                let streams = db_g
+                    .xrange(&key, &start_id, &end_id)
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
                 let resp = streams

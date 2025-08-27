@@ -1,8 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
-    time::Duration,
-    fmt, // Add this import
     error::Error, // Add this import
+    fmt,          // Add this import
+    time::Duration,
 };
 
 use tokio::time::Instant;
@@ -42,17 +42,16 @@ pub enum DbError {
 impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DbError::KeyNotFound(key) => write!(f, "Key '{}' not found", key),
-            DbError::KeyIsNotStream(key) => write!(f, "Key '{}' exists but is not a stream", key),
-            DbError::StreamStartIdNotFound(id) => write!(f, "Stream start ID '{}' not found", id),
-            DbError::StreamEndIdNotFound(id) => write!(f, "Stream end ID '{}' not found", id),
+            DbError::KeyNotFound(key) => write!(f, "Key '{key}' not found"),
+            DbError::KeyIsNotStream(key) => write!(f, "Key '{key}' exists but is not a stream"),
+            DbError::StreamStartIdNotFound(id) => write!(f, "Stream start ID '{id}' not found"),
+            DbError::StreamEndIdNotFound(id) => write!(f, "Stream end ID '{id}' not found"),
         }
     }
 }
 
 // Implement std::error::Error trait for DbError
 impl Error for DbError {}
-
 
 impl Db {
     pub fn new() -> Self {
@@ -71,6 +70,24 @@ impl Db {
             key.to_owned(),
             Instant::now() + Duration::from_millis(millis),
         );
+    }
+
+    pub fn is_expired(&mut self, key: &str) -> bool {
+        if let Some(expiration) = self.expirations.get(key)
+            && Instant::now() >= *expiration
+        {
+            return true;
+        }
+        false
+    }
+
+    pub fn expire(&mut self, key: &str) {
+        self.expirations.remove(key);
+        self.values.remove(key);
+    }
+
+    pub fn get(&mut self, key: &str) -> Option<DbValue> {
+        self.values.get(key).cloned()
     }
 
     pub fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
@@ -129,24 +146,6 @@ impl Db {
             return list.len() as u64;
         }
         0
-    }
-
-    pub fn is_expired(&mut self, key: &str) -> bool {
-        if let Some(expiration) = self.expirations.get(key)
-            && Instant::now() >= *expiration
-        {
-            return true;
-        }
-        false
-    }
-
-    pub fn expire(&mut self, key: &str) {
-        self.expirations.remove(key);
-        self.values.remove(key);
-    }
-
-    pub fn get(&mut self, key: &str) -> Option<DbValue> {
-        self.values.get(key).cloned()
     }
 
     pub fn lrange(&mut self, key: &str, start: isize, stop: isize) -> DbValue {
@@ -209,14 +208,8 @@ impl Db {
 
                 Ok(&stream_list.0[first_index..=last_index])
             }
-            Some(_) => {
-                // Key exists but is not a stream type
-                Err(DbError::KeyIsNotStream(key.to_string()))
-            }
-            None => {
-                // Key does not exist in the database
-                Err(DbError::KeyNotFound(key.to_string()))
-            }
+            Some(_) => Err(DbError::KeyIsNotStream(key.to_string())),
+            None => Err(DbError::KeyNotFound(key.to_string())),
         }
     }
 
