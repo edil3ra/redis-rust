@@ -68,6 +68,10 @@ pub enum Command {
         start: Option<String>,
         end: Option<String>,
     },
+    Xread {
+        key: String,
+        start: String,
+    },
 }
 
 impl Command {
@@ -278,6 +282,38 @@ impl Command {
                     })
                     .collect::<Vec<RespValue>>();
                 Ok(RespValue::Array(resp))
+            }
+            Command::Xread { key, start } => {
+                let mut db_g = db.lock().await;
+
+                let streams = db_g.xread(&key, &start);
+                let resp_stream = streams
+                    .iter()
+                    .map(|item| {
+                        let values_array_items: Vec<RespValue> = item
+                            .values
+                            .iter()
+                            .flat_map(|(key, value)| {
+                                vec![
+                                    RespValue::BulkString(key.clone()),
+                                    RespValue::BulkString(value.clone()),
+                                ]
+                            })
+                            .collect();
+
+                        let inner_values_resp_array = RespValue::Array(values_array_items);
+
+                        RespValue::Array(vec![
+                            RespValue::BulkString(item.id.clone()),
+                            inner_values_resp_array,
+                        ])
+                    })
+                    .collect::<Vec<RespValue>>();
+                let resp_xread = RespValue::Array(vec![RespValue::Array(vec![
+                    RespValue::BulkString(key),
+                    RespValue::Array(resp_stream),
+                ])]);
+                Ok(resp_xread)
             }
         }
     }
@@ -521,6 +557,33 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
 
             Ok(Command::Xrange { key, start, end })
         }
+
+        "XREAD" => {
+            let streams: String = args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("XREAD command requires stream"))?
+                .clone()
+                .into();
+
+            if streams.to_uppercase() != "STREAMS" {
+                return Err(anyhow::anyhow!("Expected 'streams' keyword"));
+            }
+
+            let key: String = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("XREAD command requires a key"))?
+                .clone()
+                .into();
+
+            let start: String = args
+                .get(2)
+                .ok_or_else(|| anyhow::anyhow!("XREAD command requires a start argument "))?
+                .clone()
+                .into();
+
+            Ok(Command::Xread { key, start })
+        }
+
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
     }
 }
@@ -563,12 +626,10 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
             } else {
                 0
             }
+        } else if requested_timestamp_part == "*" {
+            0
         } else {
-            if requested_timestamp_part == "*" {
-                0
-            } else {
-                1
-            }
+            1
         }
     } else {
         requested_sequence_part
@@ -580,9 +641,9 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
         bail!("ERR The ID specified in XADD must be greater than 0-0")
     }
 
-    if last_item_id.is_some() {
-        if new_timestamp < last_ms_time
-            || (new_timestamp == last_ms_time && new_sequence_number <= last_seq_num)
+    if last_item_id.is_some() && new_timestamp < last_ms_time
+        || (new_timestamp == last_ms_time && new_sequence_number <= last_seq_num)
+    {
         {
             bail!(
                 "ERR The ID specified in XADD is equal or smaller than the target stream top item"

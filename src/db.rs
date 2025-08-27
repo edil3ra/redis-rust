@@ -182,4 +182,28 @@ impl Db {
         }
         &[]
     }
+
+    pub fn xread(&mut self, key: &str, start: &str) -> &[StreamItem] {
+        if let Some(value) = self.values.get(key)
+            && let DbValue::Stream(stream_list) = value
+        {
+            let search = stream_list
+                .0
+                .binary_search_by_key(&start, |stream_item| &stream_item.id);
+
+            let first_index = match search {
+                Ok(index) => index + 1,
+                Err(index) => {
+                    if index > 0 {
+                        index - 1
+                    } else {
+                        0
+                    }
+                }
+            };
+
+            return &stream_list.0[first_index..];
+        }
+        &[]
+    }
 }
