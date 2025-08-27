@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbError, DbValue, StreamList}, // Add DbError here
+    db::{Db, DbValue, StreamList},
     resp::RespValue,
 };
 
@@ -69,8 +69,7 @@ pub enum Command {
         end: Option<String>,
     },
     Xread {
-        key: String,
-        start: String,
+        streams: Vec<(String, String)>,
     },
 }
 
@@ -285,37 +284,43 @@ impl Command {
                     .collect::<Vec<RespValue>>();
                 Ok(RespValue::Array(resp))
             }
-            Command::Xread { key, start } => {
+            Command::Xread { streams } => {
                 let mut db_g = db.lock().await;
 
-                let streams = db_g.xread(&key, &start);
-                let resp_stream = streams
-                    .iter()
-                    .map(|item| {
-                        let values_array_items: Vec<RespValue> = item
-                            .values
-                            .iter()
-                            .flat_map(|(key, value)| {
-                                vec![
-                                    RespValue::BulkString(key.clone()),
-                                    RespValue::BulkString(value.clone()),
-                                ]
-                            })
-                            .collect();
+                let mut all_stream_responses: Vec<RespValue> = Vec::new();
 
-                        let inner_values_resp_array = RespValue::Array(values_array_items);
+                for (key, start) in streams {
+                    let stream_items = db_g.xread(&key, &start);
 
-                        RespValue::Array(vec![
-                            RespValue::BulkString(item.id.clone()),
-                            inner_values_resp_array,
-                        ])
-                    })
-                    .collect::<Vec<RespValue>>();
-                let resp_xread = RespValue::Array(vec![RespValue::Array(vec![
-                    RespValue::BulkString(key),
-                    RespValue::Array(resp_stream),
-                ])]);
-                Ok(resp_xread)
+                    let resp_stream_content: Vec<RespValue> = stream_items
+                        .iter()
+                        .map(|item| {
+                            let values_array_items: Vec<RespValue> = item
+                                .values
+                                .iter()
+                                .flat_map(|(k, v)| {
+                                    vec![
+                                        RespValue::BulkString(k.clone()),
+                                        RespValue::BulkString(v.clone()),
+                                    ]
+                                })
+                                .collect();
+
+                            RespValue::Array(vec![
+                                RespValue::BulkString(item.id.clone()),
+                                RespValue::Array(values_array_items),
+                            ])
+                        })
+                        .collect();
+
+                    let stream_entry_response = RespValue::Array(vec![
+                        RespValue::BulkString(key),
+                        RespValue::Array(resp_stream_content),
+                    ]);
+                    all_stream_responses.push(stream_entry_response);
+                }
+
+                Ok(RespValue::Array(all_stream_responses))
             }
         }
     }
@@ -571,19 +576,28 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 return Err(anyhow::anyhow!("Expected 'streams' keyword"));
             }
 
-            let key: String = args
-                .get(1)
-                .ok_or_else(|| anyhow::anyhow!("XREAD command requires a key"))?
-                .clone()
-                .into();
+            let remaining_args = &args[1..];
+            if !remaining_args.len().is_multiple_of(2) {
+                return Err(anyhow::anyhow!(
+                    "XREAD STREAMS requires an even number of key-id pairs"
+                ));
+            }
 
-            let start: String = args
-                .get(2)
-                .ok_or_else(|| anyhow::anyhow!("XREAD command requires a start argument "))?
-                .clone()
-                .into();
+            let num_streams = remaining_args.len() / 2;
+            let keys_slice = &remaining_args[0..num_streams];
+            let ids_slice = &remaining_args[num_streams..];
 
-            Ok(Command::Xread { key, start })
+            let streams: Vec<(String, String)> = keys_slice
+                .iter()
+                .zip(ids_slice.iter())
+                .map(|(key_resp, id_resp)| {
+                    let key: String = key_resp.clone().into();
+                    let start: String = id_resp.clone().into();
+                    (key, start)
+                })
+                .collect();
+
+            Ok(Command::Xread { streams })
         }
 
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
