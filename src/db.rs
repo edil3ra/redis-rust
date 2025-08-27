@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
     time::Duration,
+    fmt, // Add this import
+    error::Error, // Add this import
 };
 
 use tokio::time::Instant;
@@ -26,6 +28,31 @@ pub struct StreamItem {
     pub id: String,
     pub values: HashMap<String, String>,
 }
+
+// Custom error enum for Db operations
+#[derive(Debug)]
+pub enum DbError {
+    KeyNotFound(String),
+    KeyIsNotStream(String),
+    StreamStartIdNotFound(String),
+    StreamEndIdNotFound(String),
+}
+
+// Implement Display trait for DbError to provide user-friendly messages
+impl fmt::Display for DbError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DbError::KeyNotFound(key) => write!(f, "Key '{}' not found", key),
+            DbError::KeyIsNotStream(key) => write!(f, "Key '{}' exists but is not a stream", key),
+            DbError::StreamStartIdNotFound(id) => write!(f, "Stream start ID '{}' not found", id),
+            DbError::StreamEndIdNotFound(id) => write!(f, "Stream end ID '{}' not found", id),
+        }
+    }
+}
+
+// Implement std::error::Error trait for DbError
+impl Error for DbError {}
+
 
 impl Db {
     pub fn new() -> Self {
@@ -165,22 +192,32 @@ impl Db {
         }
     }
 
-    pub fn xrange(&mut self, key: &str, start: &str, end: &str) -> &[StreamItem] {
-        if let Some(value) = self.values.get(key)
-            && let DbValue::Stream(stream_list) = value
-        {
-            let first_index = stream_list
-                .0
-                .binary_search_by_key(&start, |stream_item| &stream_item.id)
-                .unwrap();
+    pub fn xrange(&mut self, key: &str, start: &str, end: &str) -> Result<&[StreamItem], DbError> {
+        let value = self.values.get(key);
 
-            let last_index = stream_list
-                .0
-                .binary_search_by_key(&end, |stream_item| &stream_item.id)
-                .unwrap();
-            return &stream_list.0[first_index..=last_index];
+        match value {
+            Some(DbValue::Stream(stream_list)) => {
+                let first_index = stream_list
+                    .0
+                    .binary_search_by_key(&start, |stream_item| &stream_item.id)
+                    .map_err(|_| DbError::StreamStartIdNotFound(start.to_string()))?;
+
+                let last_index = stream_list
+                    .0
+                    .binary_search_by_key(&end, |stream_item| &stream_item.id)
+                    .map_err(|_| DbError::StreamEndIdNotFound(end.to_string()))?;
+
+                Ok(&stream_list.0[first_index..=last_index])
+            }
+            Some(_) => {
+                // Key exists but is not a stream type
+                Err(DbError::KeyIsNotStream(key.to_string()))
+            }
+            None => {
+                // Key does not exist in the database
+                Err(DbError::KeyNotFound(key.to_string()))
+            }
         }
-        &[]
     }
 
     pub fn xread(&mut self, key: &str, start: &str) -> &[StreamItem] {
