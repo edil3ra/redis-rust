@@ -48,7 +48,7 @@ impl From<RespValue> for u64 {
             RespValue::SimpleString(s) => s.parse().unwrap(),
             RespValue::BulkString(s) => s.parse().unwrap(),
             _ => {
-                panic!("Cannot convert to isize");
+                panic!("Cannot convert to u64");
             }
         }
     }

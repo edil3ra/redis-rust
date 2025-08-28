@@ -1,16 +1,94 @@
 use std::{
     collections::{HashMap, VecDeque},
-    error::Error, // Add this import
-    fmt,          // Add this import
+    error::Error,
+    fmt,
     time::Duration,
 };
 
-use tokio::time::Instant;
+use tokio::{sync::mpsc, time::Instant};
+use uuid::Uuid;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct StreamNotification {
+    pub key: String,
+    pub item: StreamItem,
+}
+
+#[derive(Debug)]
+pub enum ClientSender {
+    Stream(mpsc::Sender<StreamNotification>),
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct BlockedClient {
+    id: String,
+    key: String,
+    blocked_since: Instant,
+    sender: ClientSender,
+    xread_start: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct BlockingQueue {
+    waiting_clients: HashMap<String, VecDeque<BlockedClient>>,
+}
+
+impl BlockingQueue {
+    pub fn new() -> Self {
+        Self {
+            waiting_clients: HashMap::new(),
+        }
+    }
+
+    pub fn add_blocked_xread_client(
+        &mut self,
+        key: String,
+        start: String,
+        sender: mpsc::Sender<StreamNotification>,
+    ) -> String {
+        let client_id = Uuid::new_v4().to_string();
+        let client = BlockedClient {
+            id: client_id.clone(),
+            key: key.clone(),
+            blocked_since: Instant::now(),
+            sender: ClientSender::Stream(sender),
+            xread_start: Some(start),
+        };
+        self.waiting_clients
+            .entry(key)
+            .or_insert(VecDeque::new())
+            .push_back(client);
+        client_id
+    }
+
+    pub fn remove_blocked_xread_client(&mut self, client_id: &str, key: &str) {
+        if let Some(queue) = self.waiting_clients.get_mut(key) {
+            queue.retain(|client| client.id != client_id);
+        }
+    }
+
+    pub fn notify_xread_clients(&mut self, key: String, item: StreamItem) {
+        if let Some(queue) = self.waiting_clients.get_mut(&key) {
+            let notification = StreamNotification {
+                key: key.clone(),
+                item,
+            };
+
+            queue.retain(|client| match &client.sender {
+                ClientSender::Stream(sender) => sender.try_send(notification.clone()).is_ok(),
+            });
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Db {
     values: HashMap<String, DbValue>,
     expirations: HashMap<String, Instant>,
+    blocking_queue: BlockingQueue,
 }
 
 #[derive(Clone, Debug)]
@@ -38,7 +116,6 @@ pub enum DbError {
     StreamEndIdNotFound(String),
 }
 
-// Implement Display trait for DbError to provide user-friendly messages
 impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -50,7 +127,6 @@ impl fmt::Display for DbError {
     }
 }
 
-// Implement std::error::Error trait for DbError
 impl Error for DbError {}
 
 impl Db {
@@ -58,7 +134,27 @@ impl Db {
         Self {
             values: HashMap::new(),
             expirations: HashMap::new(),
+            blocking_queue: BlockingQueue::new(),
         }
+    }
+
+    pub fn add_blocked_xread_client(
+        &mut self,
+        key: String,
+        start: String,
+        sender: mpsc::Sender<StreamNotification>,
+    ) -> String {
+        self.blocking_queue
+            .add_blocked_xread_client(key, start, sender)
+    }
+
+    pub fn remove_blocked_xread_client(&mut self, client_id: &str, key: &str) {
+        self.blocking_queue
+            .remove_blocked_xread_client(client_id, key)
+    }
+
+    pub fn get(&mut self, key: &str) -> Option<DbValue> {
+        self.values.get(key).cloned()
     }
 
     pub fn insert(&mut self, key: &str, value: DbValue) {
@@ -84,10 +180,6 @@ impl Db {
     pub fn expire(&mut self, key: &str) {
         self.expirations.remove(key);
         self.values.remove(key);
-    }
-
-    pub fn get(&mut self, key: &str) -> Option<DbValue> {
-        self.values.get(key).cloned()
     }
 
     pub fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
@@ -181,13 +273,19 @@ impl Db {
             self.values
                 .insert(key.to_owned(), DbValue::Stream(StreamList(vec![])));
         }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::Stream(stream) = db_value
-        {
-            stream.0.push(StreamItem {
+        let stream = self
+            .values
+            .entry(key.to_string())
+            .or_insert_with(|| DbValue::Stream(StreamList(vec![])));
+
+        if let DbValue::Stream(stream) = stream {
+            let stream_item = StreamItem {
                 id: id.into(),
                 values,
-            });
+            };
+            stream.0.push(stream_item.clone());
+            self.blocking_queue
+                .notify_xread_clients(key.to_string(), stream_item);
         }
     }
 

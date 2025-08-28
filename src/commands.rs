@@ -70,6 +70,7 @@ pub enum Command {
     },
     Xread {
         streams: Vec<(String, String)>,
+        duration: Option<u64>,
     },
 }
 
@@ -566,17 +567,47 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         }
 
         "XREAD" => {
-            let streams: String = args
+            let first_arg: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("XREAD command requires stream"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("XREAD command requires stream or block as first arg")
+                })?
                 .clone()
                 .into();
 
-            if streams.to_uppercase() != "STREAMS" {
+            let is_firt_arg_block = first_arg.to_uppercase() == "BLOCK";
+            let duration: Option<u64> = if is_firt_arg_block {
+                Some(
+                    args.get(1)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("XREAD command requires duration in millis after block")
+                        })?
+                        .clone()
+                        .into(),
+                )
+            } else {
+                None
+            };
+
+            let remaining_args = if is_firt_arg_block {
+                &args[2..]
+            } else {
+                &args[..]
+            };
+
+            let stream_arg: String = remaining_args
+                .first()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("XREAD command requires stream or block as first arg")
+                })?
+                .clone()
+                .into();
+
+            if stream_arg.to_uppercase() != "STREAMS" {
                 return Err(anyhow::anyhow!("Expected 'streams' keyword"));
             }
 
-            let remaining_args = &args[1..];
+            let remaining_args = &remaining_args[1..];
             if !remaining_args.len().is_multiple_of(2) {
                 return Err(anyhow::anyhow!(
                     "XREAD STREAMS requires an even number of key-id pairs"
@@ -597,7 +628,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 })
                 .collect();
 
-            Ok(Command::Xread { streams })
+            Ok(Command::Xread { streams, duration })
         }
 
         c => Err(anyhow::anyhow!("Unknown command: {}", c)),
