@@ -12,6 +12,7 @@ pub enum RespValue {
     Integer(u64),
     BulkString(String),
     NullBulkString,
+    NullArray,
     Array(Vec<RespValue>),
 }
 
@@ -85,6 +86,7 @@ impl RespValue {
             RespValue::SimpleError(s) => format!("-{s}\r\n"),
             RespValue::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
             RespValue::NullBulkString => "$-1\r\n".to_string(),
+            RespValue::NullArray => "*-1\r\n".to_string(),
             RespValue::Integer(v) => format!(":{v}\r\n"),
             RespValue::Array(v) => {
                 let length = v.len();

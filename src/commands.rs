@@ -137,7 +137,7 @@ impl Command {
                     if let Some(end) = end_time
                         && Instant::now() > end
                     {
-                        return Ok(RespValue::NullBulkString);
+                        return Ok(RespValue::NullArray);
                     }
                     time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI)).await;
                 }
@@ -291,26 +291,27 @@ impl Command {
 
                     let initial_stream_responses = streams
                         .iter()
-                        .map(|(key, start)| {
+                        .filter_map(|(key, start)| {
                             let stream_items = db_g.xread(key, start);
 
                             let resp_stream_content = stream_items
                                 .iter()
                                 .map(|stream_item| stream_item.to_resp())
                                 .collect::<Vec<RespValue>>();
-
-                            RespValue::Array(vec![
-                                RespValue::BulkString(key.to_string()),
-                                RespValue::Array(resp_stream_content),
-                            ])
+                            if !resp_stream_content.is_empty() {
+                                Some(RespValue::Array(vec![
+                                    RespValue::BulkString(key.to_string()),
+                                    RespValue::Array(resp_stream_content),
+                                ]))
+                            } else {
+                                None
+                            }
                         })
                         .collect::<Vec<RespValue>>();
-
                     if !initial_stream_responses.is_empty() {
                         return Ok(RespValue::Array(initial_stream_responses));
                     }
                 }
-
                 if let Some(duration) = duration {
                     let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
                     let stream = streams[0].clone();
@@ -328,30 +329,28 @@ impl Command {
                         timeout_duration.saturating_sub(timeout_start.elapsed());
                     tokio::select! {
                         _ = tokio::time::sleep(remaining_timeout) => {
-                            // Timeout, continue to cleanup and return NullBulkString
+                            // waiting untill time out
                         }
                         Some(_notification) = receiver.recv() => {
-                            // Notification received, continue to cleanup and process items
+                            // waiting for Xadd to add something to the queue
                         }
                     }
-
                     let mut db_g = db.lock().await;
                     db_g.remove_blocked_xread_client(&client_id, &key);
 
                     let stream_items = db_g.xread(&key, &start);
                     if !stream_items.is_empty() {
-                        let resp_stream_content = stream_items.iter()
+                        let resp_stream_content = stream_items
+                            .iter()
                             .map(|stream_item| stream_item.to_resp())
                             .collect::<Vec<RespValue>>();
-                        return Ok(RespValue::Array(vec![
+                        return Ok(RespValue::Array(vec![RespValue::Array(vec![
                             RespValue::BulkString(key.to_string()),
                             RespValue::Array(resp_stream_content),
-                        ]));
+                        ])]));
                     }
                 }
-                // If the select block completes due to timeout or processed notification,
-                // and no stream items were found, return NullBulkString.
-                Ok(RespValue::NullBulkString)
+                Ok(RespValue::NullArray)
             }
         }
     }

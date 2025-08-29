@@ -61,7 +61,7 @@ impl BlockingQueue {
         };
         self.waiting_clients
             .entry(key)
-            .or_insert(VecDeque::new())
+            .or_default()
             .push_back(client);
         client_id
     }
@@ -78,7 +78,6 @@ impl BlockingQueue {
                 key: key.clone(),
                 item,
             };
-
             queue.retain(|client| match &client.sender {
                 ClientSender::Stream(sender) => sender.try_send(notification.clone()).is_ok(),
             });
