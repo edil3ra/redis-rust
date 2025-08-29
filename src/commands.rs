@@ -7,12 +7,12 @@ use std::{
 use anyhow::{Result, bail};
 
 use tokio::{
-    sync::Mutex,
+    sync::{Mutex, mpsc},
     time::{self, Instant},
 };
 
 use crate::{
-    db::{Db, DbValue, StreamList},
+    db::{Db, DbValue, StreamList, StreamNotification},
     resp::RespValue,
 };
 
@@ -285,43 +285,102 @@ impl Command {
                     .collect::<Vec<RespValue>>();
                 Ok(RespValue::Array(resp))
             }
-            Command::Xread { streams } => {
-                let mut db_g = db.lock().await;
+            Command::Xread { streams, duration } => {
+                {
+                    let mut db_g = db.lock().await;
 
-                let mut all_stream_responses: Vec<RespValue> = Vec::new();
-
-                for (key, start) in streams {
-                    let stream_items = db_g.xread(&key, &start);
-
-                    let resp_stream_content: Vec<RespValue> = stream_items
+                    let initial_stream_responses = streams
                         .iter()
-                        .map(|item| {
-                            let values_array_items: Vec<RespValue> = item
-                                .values
+                        .map(|(key, start)| {
+                            let stream_items = db_g.xread(key, start);
+
+                            let resp_stream_content = stream_items
                                 .iter()
-                                .flat_map(|(k, v)| {
-                                    vec![
-                                        RespValue::BulkString(k.clone()),
-                                        RespValue::BulkString(v.clone()),
-                                    ]
-                                })
-                                .collect();
+                                .map(|stream_item| stream_item.to_resp())
+                                .collect::<Vec<RespValue>>();
 
                             RespValue::Array(vec![
-                                RespValue::BulkString(item.id.clone()),
-                                RespValue::Array(values_array_items),
+                                RespValue::BulkString(key.to_string()),
+                                RespValue::Array(resp_stream_content),
                             ])
                         })
-                        .collect();
+                        .collect::<Vec<RespValue>>();
 
-                    let stream_entry_response = RespValue::Array(vec![
-                        RespValue::BulkString(key),
-                        RespValue::Array(resp_stream_content),
-                    ]);
-                    all_stream_responses.push(stream_entry_response);
+                    if !initial_stream_responses.is_empty() {
+                        return Ok(RespValue::Array(initial_stream_responses));
+                    }
                 }
 
-                Ok(RespValue::Array(all_stream_responses))
+                if let Some(duration) = duration {
+                    let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
+                    let stream = streams[0].clone();
+                    let (key, start) = stream;
+                    let client_id = db.lock().await.add_blocked_xread_client(
+                        key.clone(),
+                        start.clone(),
+                        sender,
+                    );
+
+                    let timeout_start = tokio::time::Instant::now();
+                    let timeout_duration = Duration::from_millis(duration);
+
+                    loop {
+                        let remaining_timeout =
+                            timeout_duration.saturating_sub(timeout_start.elapsed());
+                        // if remaining_timeout.is_zero() {
+                        //     db.lock().await.remove_blocked_xread_client(&client_id, &key);
+                        //     return Ok(RespValue::NullBulkString)
+                        // }
+
+                        tokio::select! {
+                            _ = tokio::time::sleep(remaining_timeout) => {
+                                db.lock().await.remove_blocked_xread_client(&client_id, &key);
+                                return Ok(RespValue::NullBulkString)
+                            }
+                            Some(_notification) = receiver.recv() => {
+                                let mut db_g = db.lock().await;
+                                db_g.remove_blocked_xread_client(&client_id, &key);
+                                let stream_items = db_g.xread(&key, &start);
+
+                                let resp_stream_content = stream_items.iter()
+                                    .map(|stream_item| stream_item.to_resp())
+                                    .collect::<Vec<RespValue>>();
+
+                                if resp_stream_content.is_empty() {
+                                    return Ok(RespValue::NullBulkString)
+                                } else {
+                                    let a = RespValue::Array(vec![
+                                        RespValue::BulkString(key.to_string()),
+                                        RespValue::Array(resp_stream_content),
+                                    ]);
+                                    return Ok(a);
+                                }
+                                
+                                // let entries = match db.lock() {
+                                //     Ok(store) => store.xread(key, start),
+                                //     Err(_) => {
+                                //         if let Ok(mut store_guard) = store.lock() {
+                                //             store_guard.remove_blocked_xread_client(&client_id, key);
+                                //         }
+                                //         return RespFormatter::error("Failed to acquire lock");
+                                //     }
+                                // };
+
+                                // if !entries.is_empty() {
+                                //     if let Ok(mut store_guard) = store.lock() {
+                                //         store_guard.remove_blocked_xread_client(&client_id, key);
+                                //     }
+                                //     let mut result = HashMap::new();
+                                //     result.insert(key.to_string(), entries);
+                                //     let keys_vec = vec![key.to_string()];
+                                //     return RespFormatter::array_of_stream_entry_with_keys(&keys_vec, &result);
+                                // }
+                            }
+                        }
+                    }
+                }
+
+                Ok(RespValue::NullBulkString)
             }
         }
     }
