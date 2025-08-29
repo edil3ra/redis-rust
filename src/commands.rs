@@ -324,62 +324,33 @@ impl Command {
                     let timeout_start = tokio::time::Instant::now();
                     let timeout_duration = Duration::from_millis(duration);
 
-                    loop {
-                        let remaining_timeout =
-                            timeout_duration.saturating_sub(timeout_start.elapsed());
-                        // if remaining_timeout.is_zero() {
-                        //     db.lock().await.remove_blocked_xread_client(&client_id, &key);
-                        //     return Ok(RespValue::NullBulkString)
-                        // }
-
-                        tokio::select! {
-                            _ = tokio::time::sleep(remaining_timeout) => {
-                                db.lock().await.remove_blocked_xread_client(&client_id, &key);
-                                return Ok(RespValue::NullBulkString)
-                            }
-                            Some(_notification) = receiver.recv() => {
-                                let mut db_g = db.lock().await;
-                                db_g.remove_blocked_xread_client(&client_id, &key);
-                                let stream_items = db_g.xread(&key, &start);
-
-                                let resp_stream_content = stream_items.iter()
-                                    .map(|stream_item| stream_item.to_resp())
-                                    .collect::<Vec<RespValue>>();
-
-                                if resp_stream_content.is_empty() {
-                                    return Ok(RespValue::NullBulkString)
-                                } else {
-                                    let a = RespValue::Array(vec![
-                                        RespValue::BulkString(key.to_string()),
-                                        RespValue::Array(resp_stream_content),
-                                    ]);
-                                    return Ok(a);
-                                }
-                                
-                                // let entries = match db.lock() {
-                                //     Ok(store) => store.xread(key, start),
-                                //     Err(_) => {
-                                //         if let Ok(mut store_guard) = store.lock() {
-                                //             store_guard.remove_blocked_xread_client(&client_id, key);
-                                //         }
-                                //         return RespFormatter::error("Failed to acquire lock");
-                                //     }
-                                // };
-
-                                // if !entries.is_empty() {
-                                //     if let Ok(mut store_guard) = store.lock() {
-                                //         store_guard.remove_blocked_xread_client(&client_id, key);
-                                //     }
-                                //     let mut result = HashMap::new();
-                                //     result.insert(key.to_string(), entries);
-                                //     let keys_vec = vec![key.to_string()];
-                                //     return RespFormatter::array_of_stream_entry_with_keys(&keys_vec, &result);
-                                // }
-                            }
+                    let remaining_timeout =
+                        timeout_duration.saturating_sub(timeout_start.elapsed());
+                    tokio::select! {
+                        _ = tokio::time::sleep(remaining_timeout) => {
+                            // Timeout, continue to cleanup and return NullBulkString
+                        }
+                        Some(_notification) = receiver.recv() => {
+                            // Notification received, continue to cleanup and process items
                         }
                     }
-                }
 
+                    let mut db_g = db.lock().await;
+                    db_g.remove_blocked_xread_client(&client_id, &key);
+
+                    let stream_items = db_g.xread(&key, &start);
+                    if !stream_items.is_empty() {
+                        let resp_stream_content = stream_items.iter()
+                            .map(|stream_item| stream_item.to_resp())
+                            .collect::<Vec<RespValue>>();
+                        return Ok(RespValue::Array(vec![
+                            RespValue::BulkString(key.to_string()),
+                            RespValue::Array(resp_stream_content),
+                        ]));
+                    }
+                }
+                // If the select block completes due to timeout or processed notification,
+                // and no stream items were found, return NullBulkString.
                 Ok(RespValue::NullBulkString)
             }
         }
