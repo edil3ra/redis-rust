@@ -12,12 +12,13 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbValue, StreamList, StreamNotification},
+    db::{Db, DbValue, StreamNotification},
     resp::RespValue,
 };
 
 const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
 
+#[derive(Debug)]
 pub enum Command {
     Ping,
     Echo {
@@ -69,15 +70,31 @@ pub enum Command {
         end: Option<String>,
     },
     Xread {
-        streams: Vec<(String, String)>,
+        streams: Vec<(String, XreadStartId)>,
         duration: XreadDuration,
     },
 }
 
-enum XreadDuration {
+#[derive(Debug, Clone)]
+pub enum XreadDuration {
     None,
     Inifnity,
     Normal(u64),
+}
+
+#[derive(Debug, Clone)]
+pub enum XreadStartId {
+    Last,
+    Normal(String),
+}
+
+impl XreadStartId {
+    fn to_str(&self, last_id: &str) -> String {
+        match self {
+            XreadStartId::Last => last_id.into(),
+            XreadStartId::Normal(s) => s.into(),
+        }
+    }
 }
 
 impl Command {
@@ -226,42 +243,27 @@ impl Command {
             } => {
                 let mut db_g = db.lock().await;
 
-                let stream_list: Option<StreamList> =
-                    if let Some(DbValue::Stream(stream_list)) = db_g.get(&key) {
-                        Some(stream_list)
-                    } else {
-                        None
-                    };
-
                 let start_id = start_opt.map_or_else(
-                    || "".to_string(),
+                    || db_g.xfirst(&key).unwrap().id.clone(),
                     |start_val| {
                         if start_val == "-" {
-                            stream_list
-                                .clone()
-                                .map(|stream| stream.0.first().unwrap().id.clone())
-                                .unwrap_or_else(|| start_val.clone())
+                            db_g.xfirst(&key).unwrap().id.clone()
                         } else {
                             start_val
                         }
                     },
                 );
 
-                let end_id = match end_opt {
-                    Some(end_val) => {
+                let end_id = end_opt.map_or_else(
+                    || db_g.xlast(&key).unwrap().id.clone(),
+                    |end_val| {
                         if end_val == "+" {
-                            stream_list
-                                .clone()
-                                .map(|stream| stream.0.last().unwrap().id.clone())
-                                .unwrap_or_else(|| end_val.clone())
+                            db_g.xlast(&key).unwrap().id.clone()
                         } else {
                             end_val
                         }
-                    }
-                    None => stream_list
-                        .map(|stream| stream.0.last().unwrap().id.clone())
-                        .unwrap_or_else(|| "+".to_string()),
-                };
+                    },
+                );
 
                 let streams = db_g
                     .xrange(&key, &start_id, &end_id)
@@ -298,7 +300,8 @@ impl Command {
                     let initial_stream_responses = streams
                         .iter()
                         .filter_map(|(key, start)| {
-                            let stream_items = db_g.xread(key, start);
+                            let start_id = start.to_str(&db_g.xlast(key).unwrap().id);
+                            let stream_items = db_g.xread(key, &start_id);
 
                             let resp_stream_content = stream_items
                                 .iter()
@@ -326,11 +329,15 @@ impl Command {
                         let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
                         let stream = streams[0].clone();
                         let (key, start) = stream;
-                        let client_id = db.lock().await.add_blocked_xread_client(
-                            key.clone(),
-                            start.clone(),
-                            sender,
-                        );
+                        let start_id = {
+                            let db_g = db.lock().await;
+                            start.to_str(&db_g.xlast(&key).unwrap().id)
+                        };
+
+                        let client_id =
+                            db.lock()
+                                .await
+                                .add_blocked_xread_client(key.clone(), start_id.clone(), sender);
 
                         tokio::select! {
                             _ = async {
@@ -358,7 +365,7 @@ impl Command {
                         let mut db_g = db.lock().await;
                         db_g.remove_blocked_xread_client(&client_id, &key);
 
-                        let stream_items = db_g.xread(&key, &start);
+                        let stream_items = db_g.xread(&key, &start_id);
                         if !stream_items.is_empty() {
                             let resp_stream_content = stream_items
                                 .iter()
@@ -672,12 +679,17 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
             let keys_slice = &remaining_args[0..num_streams];
             let ids_slice = &remaining_args[num_streams..];
 
-            let streams: Vec<(String, String)> = keys_slice
+            let streams: Vec<(String, XreadStartId)> = keys_slice
                 .iter()
                 .zip(ids_slice.iter())
                 .map(|(key_resp, id_resp)| {
                     let key: String = key_resp.clone().into();
-                    let start: String = id_resp.clone().into();
+                    let start_str: String = id_resp.clone().into();
+                    let start = if start_str == "$" {
+                        XreadStartId::Last
+                    } else {
+                        XreadStartId::Normal(start_str)
+                    };
                     (key, start)
                 })
                 .collect();

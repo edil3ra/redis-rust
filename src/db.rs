@@ -310,6 +310,26 @@ impl Db {
         }
     }
 
+    pub fn xfirst(&self, key: &str) -> Option<&StreamItem> {
+        if let Some(value) = self.values.get(key)
+            && let DbValue::Stream(stream_list) = value
+        {
+            stream_list.0.first()
+        } else {
+            None
+        }
+    }
+
+    pub fn xlast(&self, key: &str) -> Option<&StreamItem> {
+        if let Some(value) = self.values.get(key)
+            && let DbValue::Stream(stream_list) = value
+        {
+            stream_list.0.last()
+        } else {
+            None
+        }
+    }
+
     pub fn xrange(&mut self, key: &str, start: &str, end: &str) -> Result<&[StreamItem], DbError> {
         let value = self.values.get(key);
 
