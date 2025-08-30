@@ -70,8 +70,14 @@ pub enum Command {
     },
     Xread {
         streams: Vec<(String, String)>,
-        duration: Option<u64>,
+        duration: XreadDuration,
     },
+}
+
+enum XreadDuration {
+    None,
+    Inifnity,
+    Normal(u64),
 }
 
 impl Command {
@@ -312,7 +318,8 @@ impl Command {
                         return Ok(RespValue::Array(initial_stream_responses));
                     }
                 }
-                if let Some(duration) = duration {
+
+                if let XreadDuration::Normal(duration) = duration {
                     let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
                     let stream = streams[0].clone();
                     let (key, start) = stream;
@@ -327,6 +334,7 @@ impl Command {
 
                     let remaining_timeout =
                         timeout_duration.saturating_sub(timeout_start.elapsed());
+
                     tokio::select! {
                         _ = tokio::time::sleep(remaining_timeout) => {
                             // waiting untill time out
@@ -605,17 +613,21 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 .into();
 
             let is_firt_arg_block = first_arg.to_uppercase() == "BLOCK";
-            let duration: Option<u64> = if is_firt_arg_block {
-                Some(
-                    args.get(1)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("XREAD command requires duration in millis after block")
-                        })?
-                        .clone()
-                        .into(),
-                )
+            let duration = if is_firt_arg_block {
+                let duration: u64 = args
+                    .get(1)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("XREAD command requires duration in millis after block")
+                    })?
+                    .clone()
+                    .into();
+                if duration == 0 {
+                    XreadDuration::Inifnity
+                } else {
+                    XreadDuration::Normal(duration)
+                }
             } else {
-                None
+                XreadDuration::None
             };
 
             let remaining_args = if is_firt_arg_block {
