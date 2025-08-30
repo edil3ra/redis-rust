@@ -314,48 +314,61 @@ impl Command {
                             }
                         })
                         .collect::<Vec<RespValue>>();
+
                     if !initial_stream_responses.is_empty() {
                         return Ok(RespValue::Array(initial_stream_responses));
                     }
                 }
 
-                if let XreadDuration::Normal(duration) = duration {
-                    let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
-                    let stream = streams[0].clone();
-                    let (key, start) = stream;
-                    let client_id = db.lock().await.add_blocked_xread_client(
-                        key.clone(),
-                        start.clone(),
-                        sender,
-                    );
+                match duration {
+                    XreadDuration::None => {}
+                    XreadDuration::Inifnity | XreadDuration::Normal(_) => {
+                        let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
+                        let stream = streams[0].clone();
+                        let (key, start) = stream;
+                        let client_id = db.lock().await.add_blocked_xread_client(
+                            key.clone(),
+                            start.clone(),
+                            sender,
+                        );
 
-                    let timeout_start = tokio::time::Instant::now();
-                    let timeout_duration = Duration::from_millis(duration);
-
-                    let remaining_timeout =
-                        timeout_duration.saturating_sub(timeout_start.elapsed());
-
-                    tokio::select! {
-                        _ = tokio::time::sleep(remaining_timeout) => {
-                            // waiting untill time out
+                        tokio::select! {
+                            _ = async {
+                                match duration {
+                                    XreadDuration::Inifnity => {
+                                        std::future::pending::<()>().await;
+                                    },
+                                    XreadDuration::Normal(duration) => {
+                                        let timeout_start = tokio::time::Instant::now();
+                                        let timeout_duration = Duration::from_millis(duration);
+                                        let remaining_timeout = timeout_duration.saturating_sub(timeout_start.elapsed());
+                                        tokio::time::sleep(remaining_timeout).await;
+                                    },
+                                    XreadDuration::None => {
+                                        tokio::time::sleep(Duration::from_millis(0)).await;
+                                    }
+                                }
+                            } => {
+                                // Timeout or indefinite wait completed
+                            },
+                            Some(_notification) = receiver.recv() => {
+                                // Notification received
+                            }
                         }
-                        Some(_notification) = receiver.recv() => {
-                            // waiting for Xadd to add something to the queue
-                        }
-                    }
-                    let mut db_g = db.lock().await;
-                    db_g.remove_blocked_xread_client(&client_id, &key);
+                        let mut db_g = db.lock().await;
+                        db_g.remove_blocked_xread_client(&client_id, &key);
 
-                    let stream_items = db_g.xread(&key, &start);
-                    if !stream_items.is_empty() {
-                        let resp_stream_content = stream_items
-                            .iter()
-                            .map(|stream_item| stream_item.to_resp())
-                            .collect::<Vec<RespValue>>();
-                        return Ok(RespValue::Array(vec![RespValue::Array(vec![
-                            RespValue::BulkString(key.to_string()),
-                            RespValue::Array(resp_stream_content),
-                        ])]));
+                        let stream_items = db_g.xread(&key, &start);
+                        if !stream_items.is_empty() {
+                            let resp_stream_content = stream_items
+                                .iter()
+                                .map(|stream_item| stream_item.to_resp())
+                                .collect::<Vec<RespValue>>();
+                            return Ok(RespValue::Array(vec![RespValue::Array(vec![
+                                RespValue::BulkString(key.to_string()),
+                                RespValue::Array(resp_stream_content),
+                            ])]));
+                        }
                     }
                 }
                 Ok(RespValue::NullArray)
