@@ -4,6 +4,7 @@ use std::{error::Error, fmt};
 pub enum DbError {
     KeyNotFound(String),
     KeyIsNotStream(String),
+    KeyIsNotList(String),
     StreamStartIdNotFound(String),
     StreamEndIdNotFound(String),
 }
@@ -13,6 +14,7 @@ impl fmt::Display for DbError {
         match self {
             DbError::KeyNotFound(key) => write!(f, "Key '{key}' not found"),
             DbError::KeyIsNotStream(key) => write!(f, "Key '{key}' exists but is not a stream"),
+            DbError::KeyIsNotList(key) => write!(f, "Key '{key}' exists but is not a list"),
             DbError::StreamStartIdNotFound(id) => write!(f, "Stream start ID '{id}' not found"),
             DbError::StreamEndIdNotFound(id) => write!(f, "Stream end ID '{id}' not found"),
         }
