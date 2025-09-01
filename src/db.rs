@@ -89,36 +89,36 @@ impl Db {
         self.values.remove(key);
     }
 
-    pub fn rpush(&mut self, key: &str, values: Vec<String>) -> u64 {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
-        }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-        {
+    pub fn rpush(&mut self, key: &str, values: Vec<String>) -> Result<u64, DbError> {
+        let entry = self
+            .values
+            .entry(key.to_owned())
+            .or_insert_with(|| DbValue::List(VecDeque::new()));
+
+        if let DbValue::List(list) = entry {
             list.extend(values);
             self.blocking_queue.notify_lpop_clients(key);
-            return list.len() as u64;
+            Ok(list.len() as u64)
+        } else {
+            Err(DbError::KeyIsNotList(key.to_string()))
         }
-        0
     }
 
-    pub fn lpush(&mut self, key: &str, values: Vec<String>) -> u64 {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::List(VecDeque::new()));
-        }
-        if let Some(db_value) = self.values.get_mut(key)
-            && let DbValue::List(list) = db_value
-        {
+    pub fn lpush(&mut self, key: &str, values: Vec<String>) -> Result<u64, DbError> {
+        let entry = self
+            .values
+            .entry(key.to_owned())
+            .or_insert_with(|| DbValue::List(VecDeque::new()));
+
+        if let DbValue::List(list) = entry {
             for value in values.into_iter() {
                 list.push_front(value);
             }
             self.blocking_queue.notify_lpop_clients(key);
-            return list.len() as u64;
+            Ok(list.len() as u64)
+        } else {
+            Err(DbError::KeyIsNotList(key.to_string()))
         }
-        0
     }
 
     pub fn lpop(&mut self, key: &str, length: usize) -> Vec<String> {
@@ -177,17 +177,13 @@ impl Db {
         DbValue::List(VecDeque::new())
     }
 
-    pub fn xadd(&mut self, key: &str, id: &str, values: HashMap<String, String>) {
-        if !self.values.contains_key(key) {
-            self.values
-                .insert(key.to_owned(), DbValue::Stream(StreamList(vec![])));
-        }
-        let stream = self
+    pub fn xadd(&mut self, key: &str, id: &str, values: HashMap<String, String>) -> Result<(), DbError> {
+        let entry = self
             .values
             .entry(key.to_string())
             .or_insert_with(|| DbValue::Stream(StreamList(vec![])));
 
-        if let DbValue::Stream(stream) = stream {
+        if let DbValue::Stream(stream) = entry {
             let stream_item = StreamItem {
                 id: id.into(),
                 values,
@@ -195,6 +191,9 @@ impl Db {
             stream.0.push(stream_item.clone());
             self.blocking_queue
                 .notify_xread_clients(key, stream_item);
+            Ok(())
+        } else {
+            Err(DbError::KeyIsNotStream(key.to_string()))
         }
     }
 
@@ -240,27 +239,29 @@ impl Db {
         }
     }
 
-    pub fn xread(&mut self, key: &str, start: &str) -> &[StreamItem] {
-        if let Some(value) = self.values.get(key)
-            && let DbValue::Stream(stream_list) = value
-        {
-            let search = stream_list
-                .0
-                .binary_search_by_key(&start, |stream_item| &stream_item.id);
+    pub fn xread(&mut self, key: &str, start: &str) -> Result<&[StreamItem], DbError> {
+        if let Some(value) = self.values.get(key) {
+            if let DbValue::Stream(stream_list) = value {
+                let search = stream_list
+                    .0
+                    .binary_search_by_key(&start, |stream_item| &stream_item.id);
 
-            let first_index = match search {
-                Ok(index) => index + 1,
-                Err(index) => {
-                    if index > 0 {
-                        index - 1
-                    } else {
-                        0
+                let first_index = match search {
+                    Ok(index) => index + 1,
+                    Err(index) => {
+                        if index > 0 {
+                            index - 1
+                        } else {
+                            0
+                        }
                     }
-                }
-            };
-
-            return &stream_list.0[first_index..];
+                };
+                Ok(&stream_list.0[first_index..])
+            } else {
+                Err(DbError::KeyIsNotStream(key.to_string()))
+            }
+        } else {
+            Err(DbError::KeyNotFound(key.to_string()))
         }
-        &[]
     }
 }
