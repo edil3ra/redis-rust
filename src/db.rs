@@ -1,151 +1,20 @@
+mod blocking;
+mod stream_types;
+mod error;
+
 use std::{
     collections::{HashMap, VecDeque},
-    error::Error,
-    fmt,
     time::Duration,
 };
 
 use tokio::{sync::mpsc, time::Instant};
-use uuid::Uuid;
 
 use crate::resp::RespValue;
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct StreamNotification {
-    pub key: String,
-    pub item: StreamItem,
-}
-
-#[derive(Debug, Clone)]
-pub struct ListNotification {
-    pub key: String,
-}
-
-#[derive(Debug)]
-pub enum ClientSender {
-    Stream(mpsc::Sender<StreamNotification>),
-    List(mpsc::Sender<ListNotification>),
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct BlockedClient {
-    id: String,
-    key: String,
-    blocked_since: Instant,
-    sender: ClientSender,
-    xread_start: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct BlockingQueue {
-    waiting_clients: HashMap<String, VecDeque<BlockedClient>>,
-}
-
-impl BlockingQueue {
-    pub fn new() -> Self {
-        Self {
-            waiting_clients: HashMap::new(),
-        }
-    }
-
-    pub fn add_blocked_xread_client(
-        &mut self,
-        key: String,
-        start: String,
-        sender: mpsc::Sender<StreamNotification>,
-    ) -> String {
-        let client_id = Uuid::new_v4().to_string();
-        let client = BlockedClient {
-            id: client_id.clone(),
-            key: key.clone(),
-            blocked_since: Instant::now(),
-            sender: ClientSender::Stream(sender),
-            xread_start: Some(start),
-        };
-        self.waiting_clients
-            .entry(key)
-            .or_default()
-            .push_back(client);
-        client_id
-    }
-
-    pub fn add_blocked_lpop_client(
-        &mut self,
-        key: String,
-        sender: mpsc::Sender<ListNotification>,
-    ) -> String {
-        let client_id = Uuid::new_v4().to_string();
-        let blocked_client = BlockedClient {
-            id: client_id.clone(),
-            key: key.clone(),
-            blocked_since: Instant::now(),
-            sender: ClientSender::List(sender),
-            xread_start: None,
-        };
-        self.waiting_clients
-            .entry(key)
-            .or_default()
-            .push_back(blocked_client);
-        client_id
-    }
-
-    pub fn remove_blocked_client(&mut self, client_id: &str, key: &str) {
-        if let Some(queue) = self.waiting_clients.get_mut(key) {
-            queue.retain(|client| client.id != client_id);
-            if queue.is_empty() {
-                self.waiting_clients.remove(key);
-            }
-        }
-    }
-
-    pub fn notify_lpop_clients(&mut self, key: &str) {
-        if let Some(queue) = self.waiting_clients.get_mut(key) {
-            let notification = ListNotification {
-                key: key.to_string(),
-            };
-            let mut clients_to_retain = VecDeque::new();
-            for client in queue.drain(..) {
-                match &client.sender {
-                    ClientSender::List(sender) => {
-                        if sender.try_send(notification.clone()).is_ok() {
-                            clients_to_retain.push_back(client);
-                        }
-                    }
-                    ClientSender::Stream(_) => {
-                        clients_to_retain.push_back(client);
-                    }
-                }
-            }
-            *queue = clients_to_retain;
-        }
-    }
-
-    pub fn notify_xread_clients(&mut self, key: String, item: StreamItem) {
-        if let Some(queue) = self.waiting_clients.get_mut(&key) {
-            let notification = StreamNotification {
-                key: key.clone(),
-                item,
-            };
-            let mut clients_to_retain = VecDeque::new();
-            for client in queue.drain(..) {
-                match &client.sender {
-                    ClientSender::Stream(sender) => {
-                        if sender.try_send(notification.clone()).is_ok() {
-                            clients_to_retain.push_back(client);
-                        }
-                    }
-                    ClientSender::List(_) => {
-                        clients_to_retain.push_back(client);
-                    }
-                }
-            }
-            *queue = clients_to_retain;
-        }
-    }
-}
+use self::{
+    blocking::{BlockingQueue, ListNotification, StreamNotification},
+    stream_types::{StreamList, StreamItem},
+    error::DbError,
+};
 
 #[derive(Debug)]
 pub struct Db {
@@ -161,56 +30,6 @@ pub enum DbValue {
     Stream(StreamList),
 }
 
-#[derive(Clone, Debug)]
-pub struct StreamList(pub Vec<StreamItem>);
-
-#[derive(Clone, Debug)]
-pub struct StreamItem {
-    pub id: String,
-    pub values: HashMap<String, String>,
-}
-
-impl StreamItem {
-    pub fn to_resp(&self) -> RespValue {
-        let values_array_items = self
-            .values
-            .iter()
-            .flat_map(|(k, v)| {
-                vec![
-                    RespValue::BulkString(k.clone()),
-                    RespValue::BulkString(v.clone()),
-                ]
-            })
-            .collect();
-
-        RespValue::Array(vec![
-            RespValue::BulkString(self.id.clone()),
-            RespValue::Array(values_array_items),
-        ])
-    }
-}
-
-// Custom error enum for Db operations
-#[derive(Debug)]
-pub enum DbError {
-    KeyNotFound(String),
-    KeyIsNotStream(String),
-    StreamStartIdNotFound(String),
-    StreamEndIdNotFound(String),
-}
-
-impl fmt::Display for DbError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DbError::KeyNotFound(key) => write!(f, "Key '{key}' not found"),
-            DbError::KeyIsNotStream(key) => write!(f, "Key '{key}' exists but is not a stream"),
-            DbError::StreamStartIdNotFound(id) => write!(f, "Stream start ID '{id}' not found"),
-            DbError::StreamEndIdNotFound(id) => write!(f, "Stream end ID '{id}' not found"),
-        }
-    }
-}
-
-impl Error for DbError {}
 
 impl Db {
     pub fn new() -> Self {

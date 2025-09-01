@@ -11,9 +11,11 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbValue, ListNotification, StreamNotification},
+    db::{Db, DbValue, DbError},
     resp::RespValue,
 };
+use crate::db::blocking::{ListNotification, StreamNotification};
+use crate::db::stream_types::StreamItem;
 
 #[derive(Debug)]
 pub enum Command {
