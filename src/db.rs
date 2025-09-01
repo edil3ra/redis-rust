@@ -17,9 +17,15 @@ pub struct StreamNotification {
     pub item: StreamItem,
 }
 
+#[derive(Debug, Clone)]
+pub struct ListNotification {
+    pub key: String,
+}
+
 #[derive(Debug)]
 pub enum ClientSender {
     Stream(mpsc::Sender<StreamNotification>),
+    List(mpsc::Sender<ListNotification>),
 }
 
 #[allow(dead_code)]
@@ -66,9 +72,52 @@ impl BlockingQueue {
         client_id
     }
 
-    pub fn remove_blocked_xread_client(&mut self, client_id: &str, key: &str) {
+    pub fn add_blocked_lpop_client(
+        &mut self,
+        key: String,
+        sender: mpsc::Sender<ListNotification>,
+    ) -> String {
+        let client_id = Uuid::new_v4().to_string();
+        let blocked_client = BlockedClient {
+            id: client_id.clone(),
+            key: key.clone(),
+            blocked_since: Instant::now(),
+            sender: ClientSender::List(sender),
+            xread_start: None,
+        };
+        self.waiting_clients
+            .entry(key)
+            .or_default()
+            .push_back(blocked_client);
+        client_id
+    }
+
+    pub fn remove_blocked_client(&mut self, client_id: &str, key: &str) {
         if let Some(queue) = self.waiting_clients.get_mut(key) {
             queue.retain(|client| client.id != client_id);
+            if queue.is_empty() {
+                self.waiting_clients.remove(key);
+            }
+        }
+    }
+
+    pub fn notify_lpop_clients(&mut self, key: &str) {
+        if let Some(queue) = self.waiting_clients.get_mut(key) {
+            let notification = ListNotification { key: key.to_string() };
+            let mut clients_to_retain = VecDeque::new();
+            for client in queue.drain(..) {
+                match &client.sender {
+                    ClientSender::List(sender) => {
+                        if sender.try_send(notification.clone()).is_ok() {
+                            clients_to_retain.push_back(client);
+                        }
+                    },
+                    ClientSender::Stream(_) => {
+                        clients_to_retain.push_back(client);
+                    }
+                }
+            }
+            *queue = clients_to_retain;
         }
     }
 
@@ -78,9 +127,20 @@ impl BlockingQueue {
                 key: key.clone(),
                 item,
             };
-            queue.retain(|client| match &client.sender {
-                ClientSender::Stream(sender) => sender.try_send(notification.clone()).is_ok(),
-            });
+            let mut clients_to_retain = VecDeque::new();
+            for client in queue.drain(..) {
+                match &client.sender {
+                    ClientSender::Stream(sender) => {
+                        if sender.try_send(notification.clone()).is_ok() {
+                            clients_to_retain.push_back(client);
+                        }
+                    },
+                    ClientSender::List(_) => {
+                        clients_to_retain.push_back(client);
+                    }
+                }
+            }
+            *queue = clients_to_retain;
         }
     }
 }
@@ -169,9 +229,17 @@ impl Db {
             .add_blocked_xread_client(key, start, sender)
     }
 
-    pub fn remove_blocked_xread_client(&mut self, client_id: &str, key: &str) {
+    pub fn add_blocked_lpop_client(
+        &mut self,
+        key: String,
+        sender: mpsc::Sender<ListNotification>,
+    ) -> String {
+        self.blocking_queue.add_blocked_lpop_client(key, sender)
+    }
+
+    pub fn remove_blocked_client(&mut self, client_id: &str, key: &str) {
         self.blocking_queue
-            .remove_blocked_xread_client(client_id, key)
+            .remove_blocked_client(client_id, key)
     }
 
     pub fn get(&mut self, key: &str) -> Option<DbValue> {
@@ -212,6 +280,7 @@ impl Db {
             && let DbValue::List(list) = db_value
         {
             list.extend(values);
+            self.blocking_queue.notify_lpop_clients(key);
             return list.len() as u64;
         }
         0
@@ -228,6 +297,7 @@ impl Db {
             for value in values.into_iter() {
                 list.push_front(value);
             }
+            self.blocking_queue.notify_lpop_clients(key);
             return list.len() as u64;
         }
         0
