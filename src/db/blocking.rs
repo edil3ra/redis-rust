@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    time::Duration,
-};
+use std::collections::VecDeque;
 use tokio::{sync::mpsc, time::Instant};
 use uuid::Uuid;
 
@@ -12,6 +9,7 @@ pub struct StreamNotification {
     pub item: super::stream_types::StreamItem,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ListNotification {
     pub key: String,
@@ -118,10 +116,10 @@ impl BlockingQueue {
         }
     }
 
-    pub fn notify_xread_clients(&mut self, key: String, item: super::stream_types::StreamItem) {
-        if let Some(queue) = self.waiting_clients.get_mut(&key) {
+    pub fn notify_xread_clients(&mut self, key: &str, item: super::stream_types::StreamItem) {
+        if let Some(queue) = self.waiting_clients.get_mut(key) {
             let notification = StreamNotification {
-                key: key.clone(),
+                key: key.to_string(),
                 item,
             };
             let mut clients_to_retain = VecDeque::new();

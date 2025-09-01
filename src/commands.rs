@@ -6,16 +6,15 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use tokio::{
-    sync::{Mutex, mpsc},
-};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{
-    db::{Db, DbValue, DbError},
+    db::{
+        Db, DbValue,
+        blocking::{ListNotification, StreamNotification},
+    },
     resp::RespValue,
 };
-use crate::db::blocking::{ListNotification, StreamNotification};
-use crate::db::stream_types::StreamItem;
 
 #[derive(Debug)]
 pub enum Command {

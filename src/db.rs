@@ -1,6 +1,6 @@
-mod blocking;
-mod stream_types;
-mod error;
+pub(crate) mod blocking;
+pub(crate) mod error;
+pub(crate) mod stream_types;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -9,11 +9,10 @@ use std::{
 
 use tokio::{sync::mpsc, time::Instant};
 
-use crate::resp::RespValue;
 use self::{
     blocking::{BlockingQueue, ListNotification, StreamNotification},
-    stream_types::{StreamList, StreamItem},
     error::DbError,
+    stream_types::{StreamItem, StreamList},
 };
 
 #[derive(Debug)]
@@ -29,7 +28,6 @@ pub enum DbValue {
     List(VecDeque<String>),
     Stream(StreamList),
 }
-
 
 impl Db {
     pub fn new() -> Self {
@@ -196,7 +194,7 @@ impl Db {
             };
             stream.0.push(stream_item.clone());
             self.blocking_queue
-                .notify_xread_clients(key.to_string(), stream_item);
+                .notify_xread_clients(key, stream_item);
         }
     }
 

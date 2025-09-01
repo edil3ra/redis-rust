@@ -1,5 +1,5 @@
-use std::collections::{HashMap, VecDeque};
 use crate::resp::RespValue;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct StreamList(pub Vec<StreamItem>);
