@@ -1,11 +1,9 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+pub(crate) mod parser;
+pub(crate) mod xstream_helpers;
 
-use anyhow::{Result, anyhow, bail};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use anyhow::{Result, anyhow};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
@@ -15,6 +13,8 @@ use crate::{
     },
     resp::RespValue,
 };
+
+use self::xstream_helpers::{XreadDuration, XreadStartId, derive_new_stream_id};
 
 #[derive(Debug)]
 pub enum Command {
@@ -71,28 +71,6 @@ pub enum Command {
         streams: Vec<(String, XreadStartId)>,
         duration: XreadDuration,
     },
-}
-
-#[derive(Debug, Clone)]
-pub enum XreadDuration {
-    None,
-    Inifnity,
-    Normal(u64),
-}
-
-#[derive(Debug, Clone)]
-pub enum XreadStartId {
-    Last,
-    Normal(String),
-}
-
-impl XreadStartId {
-    fn to_str(&self, last_id: &str) -> String {
-        match self {
-            XreadStartId::Last => last_id.into(),
-            XreadStartId::Normal(s) => s.into(),
-        }
-    }
 }
 
 impl Command {
@@ -252,7 +230,7 @@ impl Command {
                     field_value_pairs
                         .into_iter()
                         .collect::<HashMap<String, String>>(),
-                );
+                )?;
                 Ok(RespValue::BulkString(new_id))
             }
             Command::Xrange {
@@ -263,10 +241,18 @@ impl Command {
                 let mut db_g = db.lock().await;
 
                 let start_id = start_opt.map_or_else(
-                    || db_g.xfirst(&key).unwrap().id.clone(),
+                    || {
+                        db_g.xfirst(&key)
+                            .ok_or_else(|| anyhow!("Stream has no first item")).ok()?
+                            .id
+                            .clone()
+                    },
                     |start_val| {
                         if start_val == "-" {
-                            db_g.xfirst(&key).unwrap().id.clone()
+                            db_g.xfirst(&key)
+                                .ok_or_else(|| anyhow!("Stream has no first item")).ok()?
+                                .id
+                                .clone()
                         } else {
                             start_val
                         }
@@ -274,10 +260,18 @@ impl Command {
                 );
 
                 let end_id = end_opt.map_or_else(
-                    || db_g.xlast(&key).unwrap().id.clone(),
+                    || {
+                        db_g.xlast(&key)
+                            .ok_or_else(|| anyhow!("Stream has no last item"))?
+                            .id
+                            .clone()
+                    },
                     |end_val| {
                         if end_val == "+" {
-                            db_g.xlast(&key).unwrap().id.clone()
+                            db_g.xlast(&key)
+                                .ok_or_else(|| anyhow!("Stream has no last item"))?
+                                .id
+                                .clone()
                         } else {
                             end_val
                         }
@@ -319,21 +313,26 @@ impl Command {
                     let initial_stream_responses = streams
                         .iter()
                         .filter_map(|(key, start)| {
-                            let start_id = start.to_str(&db_g.xlast(key).unwrap().id);
-                            let stream_items = db_g.xread(key, &start_id).ok()?;
+                            let last_id_for_stream = db_g.xlast(key).map(|item| item.id.clone());
+                            let start_id_str =
+                                start.to_str(last_id_for_stream.as_deref().unwrap_or("0-0"));
 
-                            let resp_stream_content = stream_items
-                                .iter()
-                                .map(|stream_item| stream_item.to_resp())
-                                .collect::<Vec<RespValue>>();
-                            if !resp_stream_content.is_empty() {
-                                Some(RespValue::Array(vec![
-                                    RespValue::BulkString(key.to_string()),
-                                    RespValue::Array(resp_stream_content),
-                                ]))
-                            } else {
-                                None
-                            }
+                            db_g.xread(key, &start_id_str)
+                                .ok()
+                                .and_then(|stream_items| {
+                                    let resp_stream_content = stream_items
+                                        .iter()
+                                        .map(|stream_item| stream_item.to_resp())
+                                        .collect::<Vec<RespValue>>();
+                                    if !resp_stream_content.is_empty() {
+                                        Some(RespValue::Array(vec![
+                                            RespValue::BulkString(key.to_string()),
+                                            RespValue::Array(resp_stream_content),
+                                        ]))
+                                    } else {
+                                        None
+                                    }
+                                })
                         })
                         .collect::<Vec<RespValue>>();
 
@@ -348,14 +347,15 @@ impl Command {
                         let (sender, mut receiver) = mpsc::channel::<StreamNotification>(100);
                         let stream = streams[0].clone();
                         let (key, start) = stream;
-                        let start_id = {
+                        let start_id_str = {
                             let db_g = db.lock().await;
-                            start.to_str(&db_g.xlast(&key).unwrap().id)
+                            let last_id = db_g.xlast(&key).map(|item| item.id.clone());
+                            start.to_str(last_id.as_deref().unwrap_or("0-0"))
                         };
 
                         let client_id = db.lock().await.add_blocked_xread_client(
                             key.clone(),
-                            start_id.clone(),
+                            start_id_str.clone(),
                             sender,
                         );
 
@@ -385,7 +385,7 @@ impl Command {
                         let mut db_g = db.lock().await;
                         db_g.remove_blocked_client(&client_id, &key);
 
-                        let stream_items = db_g.xread(&key, &start_id)?;
+                        let stream_items = db_g.xread(&key, &start_id_str)?;
                         if !stream_items.is_empty() {
                             let resp_stream_content = stream_items
                                 .into_iter()
@@ -401,409 +401,5 @@ impl Command {
                 Ok(RespValue::NullArray)
             }
         }
-    }
-}
-
-pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Command> {
-    match command_name.to_uppercase().as_str() {
-        "PING" => {
-            if !args.is_empty() {
-                return Err(anyhow!("PING command takes no arguments"));
-            }
-            Ok(Command::Ping)
-        }
-        "ECHO" => {
-            let message: String = args
-                .first()
-                .ok_or_else(|| anyhow!("ECHO command requires an argument"))?
-                .clone()
-                .into();
-            Ok(Command::Echo { message })
-        }
-        "SET" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("SET command requires a key"))?
-                .clone()
-                .into();
-
-            let value: String = args
-                .get(1)
-                .ok_or_else(|| anyhow!("SET command requires a value"))?
-                .clone()
-                .into();
-
-            let mut expiry_millis: Option<u64> = None;
-
-            if let Some(px_arg) = args.get(2) {
-                let px_str: String = px_arg.clone().into();
-                if px_str.to_uppercase() == "PX" {
-                    let millis_str: String = args
-                        .get(3)
-                        .ok_or_else(|| anyhow!("Missing milliseconds value for PX"))?
-                        .clone()
-                        .into();
-                    expiry_millis = Some(
-                        millis_str
-                            .parse::<u64>()
-                            .map_err(|e| anyhow!("Invalid PX value: {}", e))?,
-                    );
-                    if args.len() > 4 {
-                        return Err(anyhow!("Too many arguments for SET command"));
-                    }
-                } else {
-                    return Err(anyhow!(
-                        "Unknown argument after value. Expected 'PX' or end of command."
-                    ));
-                }
-            } else if args.len() > 2 {
-                return Err(anyhow!("Too many arguments for SET command"));
-            }
-
-            Ok(Command::Set {
-                key,
-                value,
-                expiry_millis,
-            })
-        }
-        "RPUSH" => {
-            let key = args
-                .first()
-                .ok_or_else(|| anyhow!("RPUSH command requires a key"))?
-                .clone()
-                .into();
-            if args.len() < 2 {
-                return Err(anyhow!("RPUSH command requires at least one value"));
-            }
-
-            let values = args[1..]
-                .iter()
-                .map(|resp_value| resp_value.clone().into())
-                .collect::<Vec<String>>();
-
-            Ok(Command::Rpush { key, values })
-        }
-        "LPUSH" => {
-            let key = args
-                .first()
-                .ok_or_else(|| anyhow!("LPUSH command requires a key"))?
-                .clone()
-                .into();
-            if args.len() < 2 {
-                return Err(anyhow!("LPUSH command requires at least one value"));
-            }
-
-            let values = args[1..]
-                .iter()
-                .map(|resp_value| resp_value.clone().into())
-                .collect::<Vec<String>>();
-
-            Ok(Command::Lpush { key, values })
-        }
-        "LPOP" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("LPOP command requires a key"))?
-                .clone()
-                .into();
-
-            let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1);
-
-            if args.len() > 2 {
-                return Err(anyhow!("Too many arguments for LPOP command"));
-            }
-
-            Ok(Command::Lpop { key, count })
-        }
-        "BLPOP" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("BLPOP command requires a key"))?
-                .clone()
-                .into();
-
-            let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0);
-
-            if args.len() > 2 {
-                return Err(anyhow!("Too many arguments for BLPOP command"));
-            }
-
-            Ok(Command::Blpop {
-                key,
-                timeout_seconds,
-            })
-        }
-        "LLEN" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("LLEN command requires a key"))?
-                .clone()
-                .into();
-
-            if args.len() > 1 {
-                return Err(anyhow!("Too many arguments for LLEN command"));
-            }
-
-            Ok(Command::Llen { key })
-        }
-        "GET" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("GET command requires a key"))?
-                .clone()
-                .into();
-
-            if args.len() > 1 {
-                return Err(anyhow!("Too many arguments for GET command"));
-            }
-
-            Ok(Command::Get { key })
-        }
-        "LRANGE" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("LRANGE command requires a key"))?
-                .clone()
-                .into();
-
-            let start: isize = args
-                .get(1)
-                .ok_or_else(|| anyhow!("LRANGE command requires a start value"))?
-                .clone()
-                .into();
-
-            let stop: isize = args
-                .get(2)
-                .ok_or_else(|| anyhow!("LRANGE command requires a stop value"))?
-                .clone()
-                .into();
-
-            if args.len() > 3 {
-                return Err(anyhow!("Too many arguments for LRANGE command"));
-            }
-
-            Ok(Command::Lrange { key, start, stop })
-        }
-        "TYPE" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("TYPE command requires a key"))?
-                .clone()
-                .into();
-
-            Ok(Command::Type { key })
-        }
-        "XADD" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("XADD command requires a key"))?
-                .clone()
-                .into();
-
-            let id: String = args
-                .get(1)
-                .ok_or_else(|| anyhow!("XADD command requires an id"))?
-                .clone()
-                .into();
-
-            let remaining_args = &args[2..];
-
-            if !remaining_args.len().is_multiple_of(2) {
-                return Err(anyhow!(
-                    "XADD command requires an even number of field-value pairs"
-                ));
-            }
-
-            let field_value_pairs: Vec<(String, String)> = remaining_args
-                .chunks_exact(2)
-                .map(|chunk| {
-                    let field: String = chunk[0].clone().into();
-                    let value: String = chunk[1].clone().into();
-                    (field, value)
-                })
-                .collect();
-
-            Ok(Command::Xadd {
-                key,
-                id,
-                field_value_pairs,
-            })
-        }
-
-        "XRANGE" => {
-            let key: String = args
-                .first()
-                .ok_or_else(|| anyhow!("XRANGE command requires a key"))?
-                .clone()
-                .into();
-
-            let start = args.get(1).map(|s| s.clone().into());
-            let end = args.get(2).map(|s| s.clone().into());
-
-            Ok(Command::Xrange { key, start, end })
-        }
-
-        "XREAD" => {
-            let first_arg: String = args
-                .first()
-                .ok_or_else(|| anyhow!("XREAD command requires stream or block as first arg"))?
-                .clone()
-                .into();
-
-            let is_firt_arg_block = first_arg.to_uppercase() == "BLOCK";
-            let duration = if is_firt_arg_block {
-                let duration: u64 = args
-                    .get(1)
-                    .ok_or_else(|| {
-                        anyhow!("XREAD command requires duration in millis after block")
-                    })?
-                    .clone()
-                    .into();
-                if duration == 0 {
-                    XreadDuration::Inifnity
-                } else {
-                    XreadDuration::Normal(duration)
-                }
-            } else {
-                XreadDuration::None
-            };
-
-            let remaining_args = if is_firt_arg_block {
-                &args[2..]
-            } else {
-                &args[..]
-            };
-
-            let stream_arg: String = remaining_args
-                .first()
-                .ok_or_else(|| anyhow!("XREAD command requires stream or block as first arg"))?
-                .clone()
-                .into();
-
-            if stream_arg.to_uppercase() != "STREAMS" {
-                return Err(anyhow!("Expected 'streams' keyword"));
-            }
-
-            let remaining_args = &remaining_args[1..];
-            if !remaining_args.len().is_multiple_of(2) {
-                return Err(anyhow!(
-                    "XREAD STREAMS requires an even number of key-id pairs"
-                ));
-            }
-
-            let num_streams = remaining_args.len() / 2;
-            let keys_slice = &remaining_args[0..num_streams];
-            let ids_slice = &remaining_args[num_streams..];
-
-            let streams: Vec<(String, XreadStartId)> = keys_slice
-                .iter()
-                .zip(ids_slice.iter())
-                .map(|(key_resp, id_resp)| {
-                    let key: String = key_resp.clone().into();
-                    let start_str: String = id_resp.clone().into();
-                    let start = if start_str == "$" {
-                        XreadStartId::Last
-                    } else {
-                        XreadStartId::Normal(start_str)
-                    };
-                    (key, start)
-                })
-                .collect();
-
-            Ok(Command::Xread { streams, duration })
-        }
-
-        c => Err(anyhow!("Unknown command: {}", c)),
-    }
-}
-
-fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -> Result<String> {
-    let (last_ms_time, last_seq_num) = if let Some(last_id_str) = last_item_id {
-        let (ms_str, seq_str) = last_id_str
-            .split_once('-')
-            .ok_or_else(|| anyhow!("Invalid last stream ID format: {}", last_id_str))?;
-        (ms_str.parse::<u128>()?, seq_str.parse::<u64>()?)
-    } else {
-        (0, 0)
-    };
-
-    let (requested_timestamp_part, requested_sequence_part) = if requested_id_str == "*" {
-        ("*", "*")
-    } else {
-        requested_id_str
-            .split_once("-")
-            .ok_or_else(|| anyhow!("Invalid stream ID format: {}", requested_id_str))?
-    };
-
-    let current_system_time_millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis();
-
-    let new_timestamp: u128 = if requested_timestamp_part == "*" {
-        current_system_time_millis
-    } else {
-        requested_timestamp_part
-            .parse()
-            .map_err(|_| anyhow!("Timestamp is not a valid number"))?
-    };
-
-    let new_sequence_number: u64 = if requested_sequence_part == "*" {
-        if last_item_id.is_some() {
-            if new_timestamp == last_ms_time {
-                last_seq_num + 1
-            } else {
-                0
-            }
-        } else if requested_timestamp_part == "*" {
-            0
-        } else {
-            1
-        }
-    } else {
-        requested_sequence_part
-            .parse()
-            .map_err(|_| anyhow!("Sequence is not a valid number"))?
-    };
-
-    if new_timestamp == 0 && new_sequence_number == 0 {
-        bail!("ERR The ID specified in XADD must be greater than 0-0")
-    }
-
-    if last_item_id.is_some() && new_timestamp < last_ms_time
-        || (new_timestamp == last_ms_time && new_sequence_number <= last_seq_num)
-    {
-        {
-            bail!(
-                "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-            )
-        }
-    }
-
-    Ok(format!("{new_timestamp}-{new_sequence_number}"))
-}
-
-pub fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
-    match value {
-        RespValue::Array(a) => {
-            if a.is_empty() {
-                return Err(anyhow!("Empty array received as command"));
-            }
-            Ok((
-                unpack_bulk_str(a.first().unwrap().clone())?,
-                a.into_iter().skip(1).collect(),
-            ))
-        }
-        _ => Err(anyhow!("Unexpected command format")),
-    }
-}
-
-fn unpack_bulk_str(value: RespValue) -> Result<String> {
-    match value {
-        RespValue::BulkString(s) => Ok(s),
-        RespValue::SimpleString(s) => Ok(s),
-        _ => Err(anyhow!(
-            "Expected command name to be a bulk or simple string"
-        )),
     }
 }

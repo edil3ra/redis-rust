@@ -5,7 +5,7 @@ mod resp;
 use std::sync::Arc;
 
 use anyhow::Result;
-use commands::*;
+use commands::parser::{extract_command, parse_command};
 use db::*;
 use resp::RespValue;
 use tokio::{
