@@ -12,11 +12,9 @@ use tokio::{
 };
 
 use crate::{
-    db::{Db, DbValue, StreamNotification},
+    db::{Db, DbValue, StreamNotification, ListNotification},
     resp::RespValue,
 };
-
-const WAITING_TIME_FOR_BPLOP_MILLI: u64 = 10;
 
 #[derive(Debug)]
 pub enum Command {
@@ -134,35 +132,59 @@ impl Command {
                     ))
                 }
             }
-            Command::Blpop {
-                key,
-                timeout_seconds,
-            } => {
-                let end_time = if timeout_seconds == 0. {
-                    None
-                } else {
-                    Some(Instant::now() + Duration::from_secs_f64(timeout_seconds))
+            Command::Blpop { key, timeout_seconds } => {
+                // 1. Try to LPOP immediately
+                let initial_lpop_result = {
+                    let mut db_g = db.lock().await;
+                    db_g.lpop(&key, 1)
                 };
 
-                loop {
-                    {
+                if !initial_lpop_result.is_empty() {
+                    return Ok(RespValue::Array(
+                        std::iter::once(RespValue::BulkString(key))
+                            .chain(initial_lpop_result.into_iter().map(RespValue::BulkString))
+                            .collect(),
+                    ));
+                }
+
+                // 2. If timeout is 0 and no initial elements, return NullArray
+                if timeout_seconds == 0.0 {
+                    return Ok(RespValue::NullArray);
+                }
+
+                // 3. Otherwise, set up blocking
+                let (sender, mut receiver) = mpsc::channel(1);
+                let client_id = {
+                    let mut db_g = db.lock().await;
+                    db_g.add_blocked_lpop_client(key.clone(), sender)
+                };
+
+                let timeout_duration = Duration::from_secs_f64(timeout_seconds);
+
+                tokio::select! {
+                    _ = tokio::time::sleep(timeout_duration) => {
+                        // Timeout elapsed
                         let mut db_g = db.lock().await;
+                        db_g.remove_blocked_client(&client_id, &key);
+                        Ok(RespValue::NullArray)
+                    },
+                    Some(_notification) = receiver.recv() => {
+                        // Notification received, try LPOP again
+                        let mut db_g = db.lock().await;
+                        db_g.remove_blocked_client(&client_id, &key);
                         let results = db_g.lpop(&key, 1);
+
                         if !results.is_empty() {
-                            return Ok(RespValue::Array(
+                            Ok(RespValue::Array(
                                 std::iter::once(RespValue::BulkString(key))
                                     .chain(results.into_iter().map(RespValue::BulkString))
                                     .collect(),
-                            ));
+                            ))
+                        } else {
+                            // This case handles potential race conditions where another client got the item.
+                            Ok(RespValue::NullArray)
                         }
                     }
-
-                    if let Some(end) = end_time
-                        && Instant::now() > end
-                    {
-                        return Ok(RespValue::NullArray);
-                    }
-                    time::sleep(Duration::from_millis(WAITING_TIME_FOR_BPLOP_MILLI)).await;
                 }
             }
             Command::Llen { key } => {
@@ -363,7 +385,7 @@ impl Command {
                             }
                         }
                         let mut db_g = db.lock().await;
-                        db_g.remove_blocked_xread_client(&client_id, &key);
+                        db_g.remove_blocked_client(&client_id, &key);
 
                         let stream_items = db_g.xread(&key, &start_id);
                         if !stream_items.is_empty() {
