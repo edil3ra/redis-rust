@@ -3,7 +3,7 @@ pub(crate) mod xstream_helpers;
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
@@ -233,6 +233,7 @@ impl Command {
                 )?;
                 Ok(RespValue::BulkString(new_id))
             }
+
             Command::Xrange {
                 key,
                 start: start_opt,
@@ -241,18 +242,10 @@ impl Command {
                 let mut db_g = db.lock().await;
 
                 let start_id = start_opt.map_or_else(
-                    || {
-                        db_g.xfirst(&key)
-                            .ok_or_else(|| anyhow!("Stream has no first item")).ok()?
-                            .id
-                            .clone()
-                    },
+                    || db_g.xfirst(&key).unwrap().id.clone(),
                     |start_val| {
                         if start_val == "-" {
-                            db_g.xfirst(&key)
-                                .ok_or_else(|| anyhow!("Stream has no first item")).ok()?
-                                .id
-                                .clone()
+                            db_g.xfirst(&key).unwrap().id.clone()
                         } else {
                             start_val
                         }
@@ -260,18 +253,10 @@ impl Command {
                 );
 
                 let end_id = end_opt.map_or_else(
-                    || {
-                        db_g.xlast(&key)
-                            .ok_or_else(|| anyhow!("Stream has no last item"))?
-                            .id
-                            .clone()
-                    },
+                    || db_g.xlast(&key).unwrap().id.clone(),
                     |end_val| {
                         if end_val == "+" {
-                            db_g.xlast(&key)
-                                .ok_or_else(|| anyhow!("Stream has no last item"))?
-                                .id
-                                .clone()
+                            db_g.xlast(&key).unwrap().id.clone()
                         } else {
                             end_val
                         }
@@ -280,7 +265,7 @@ impl Command {
 
                 let streams = db_g
                     .xrange(&key, &start_id, &end_id)
-                    .map_err(|e| anyhow!(e.to_string()))?;
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
                 let resp = streams
                     .iter()
@@ -388,7 +373,7 @@ impl Command {
                         let stream_items = db_g.xread(&key, &start_id_str)?;
                         if !stream_items.is_empty() {
                             let resp_stream_content = stream_items
-                                .into_iter()
+                                .iter()
                                 .map(|stream_item| stream_item.to_resp())
                                 .collect::<Vec<RespValue>>();
                             return Ok(RespValue::Array(vec![RespValue::Array(vec![
