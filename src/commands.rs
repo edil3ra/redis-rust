@@ -8,11 +8,10 @@ use anyhow::{Result, bail};
 
 use tokio::{
     sync::{Mutex, mpsc},
-    time::{self, Instant},
 };
 
 use crate::{
-    db::{Db, DbValue, StreamNotification, ListNotification},
+    db::{Db, DbValue, ListNotification, StreamNotification},
     resp::RespValue,
 };
 
@@ -132,8 +131,10 @@ impl Command {
                     ))
                 }
             }
-            Command::Blpop { key, timeout_seconds } => {
-                // 1. Try to LPOP immediately
+            Command::Blpop {
+                key,
+                timeout_seconds,
+            } => {
                 let initial_lpop_result = {
                     let mut db_g = db.lock().await;
                     db_g.lpop(&key, 1)
@@ -147,13 +148,11 @@ impl Command {
                     ));
                 }
 
-                // 2. If timeout is 0 and no initial elements, return NullArray
                 if timeout_seconds == 0.0 {
                     return Ok(RespValue::NullArray);
                 }
 
-                // 3. Otherwise, set up blocking
-                let (sender, mut receiver) = mpsc::channel(1);
+                let (sender, mut receiver) = mpsc::channel::<ListNotification>(1);
                 let client_id = {
                     let mut db_g = db.lock().await;
                     db_g.add_blocked_lpop_client(key.clone(), sender)
@@ -163,13 +162,11 @@ impl Command {
 
                 tokio::select! {
                     _ = tokio::time::sleep(timeout_duration) => {
-                        // Timeout elapsed
                         let mut db_g = db.lock().await;
                         db_g.remove_blocked_client(&client_id, &key);
                         Ok(RespValue::NullArray)
                     },
                     Some(_notification) = receiver.recv() => {
-                        // Notification received, try LPOP again
                         let mut db_g = db.lock().await;
                         db_g.remove_blocked_client(&client_id, &key);
                         let results = db_g.lpop(&key, 1);
@@ -181,7 +178,6 @@ impl Command {
                                     .collect(),
                             ))
                         } else {
-                            // This case handles potential race conditions where another client got the item.
                             Ok(RespValue::NullArray)
                         }
                     }
@@ -356,10 +352,11 @@ impl Command {
                             start.to_str(&db_g.xlast(&key).unwrap().id)
                         };
 
-                        let client_id =
-                            db.lock()
-                                .await
-                                .add_blocked_xread_client(key.clone(), start_id.clone(), sender);
+                        let client_id = db.lock().await.add_blocked_xread_client(
+                            key.clone(),
+                            start_id.clone(),
+                            sender,
+                        );
 
                         tokio::select! {
                             _ = async {

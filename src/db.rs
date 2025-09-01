@@ -103,7 +103,9 @@ impl BlockingQueue {
 
     pub fn notify_lpop_clients(&mut self, key: &str) {
         if let Some(queue) = self.waiting_clients.get_mut(key) {
-            let notification = ListNotification { key: key.to_string() };
+            let notification = ListNotification {
+                key: key.to_string(),
+            };
             let mut clients_to_retain = VecDeque::new();
             for client in queue.drain(..) {
                 match &client.sender {
@@ -111,7 +113,7 @@ impl BlockingQueue {
                         if sender.try_send(notification.clone()).is_ok() {
                             clients_to_retain.push_back(client);
                         }
-                    },
+                    }
                     ClientSender::Stream(_) => {
                         clients_to_retain.push_back(client);
                     }
@@ -134,7 +136,7 @@ impl BlockingQueue {
                         if sender.try_send(notification.clone()).is_ok() {
                             clients_to_retain.push_back(client);
                         }
-                    },
+                    }
                     ClientSender::List(_) => {
                         clients_to_retain.push_back(client);
                     }
@@ -238,8 +240,7 @@ impl Db {
     }
 
     pub fn remove_blocked_client(&mut self, client_id: &str, key: &str) {
-        self.blocking_queue
-            .remove_blocked_client(client_id, key)
+        self.blocking_queue.remove_blocked_client(client_id, key)
     }
 
     pub fn get(&mut self, key: &str) -> Option<DbValue> {
