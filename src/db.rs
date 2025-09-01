@@ -177,7 +177,12 @@ impl Db {
         DbValue::List(VecDeque::new())
     }
 
-    pub fn xadd(&mut self, key: &str, id: &str, values: HashMap<String, String>) -> Result<(), DbError> {
+    pub fn xadd(
+        &mut self,
+        key: &str,
+        id: &str,
+        values: HashMap<String, String>,
+    ) -> Result<(), DbError> {
         let entry = self
             .values
             .entry(key.to_string())
@@ -189,8 +194,7 @@ impl Db {
                 values,
             };
             stream.0.push(stream_item.clone());
-            self.blocking_queue
-                .notify_xread_clients(key, stream_item);
+            self.blocking_queue.notify_xread_clients(key, stream_item);
             Ok(())
         } else {
             Err(DbError::KeyIsNotStream(key.to_string()))

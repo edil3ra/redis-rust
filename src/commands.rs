@@ -4,7 +4,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use tokio::sync::{Mutex, mpsc};
 
@@ -113,11 +113,11 @@ impl Command {
                 Ok(RespValue::SimpleString("OK".to_string()))
             }
             Command::Rpush { key, values } => {
-                let length = db.lock().await.rpush(&key, values);
+                let length = db.lock().await.rpush(&key, values)?;
                 Ok(RespValue::Integer(length))
             }
             Command::Lpush { key, values } => {
-                let length = db.lock().await.lpush(&key, values);
+                let length = db.lock().await.lpush(&key, values)?;
                 Ok(RespValue::Integer(length))
             }
             Command::Lpop { key, count } => {
@@ -286,7 +286,7 @@ impl Command {
 
                 let streams = db_g
                     .xrange(&key, &start_id, &end_id)
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    .map_err(|e| anyhow!(e.to_string()))?;
 
                 let resp = streams
                     .iter()
@@ -320,7 +320,7 @@ impl Command {
                         .iter()
                         .filter_map(|(key, start)| {
                             let start_id = start.to_str(&db_g.xlast(key).unwrap().id);
-                            let stream_items = db_g.xread(key, &start_id);
+                            let stream_items = db_g.xread(key, &start_id).ok()?;
 
                             let resp_stream_content = stream_items
                                 .iter()
@@ -385,10 +385,10 @@ impl Command {
                         let mut db_g = db.lock().await;
                         db_g.remove_blocked_client(&client_id, &key);
 
-                        let stream_items = db_g.xread(&key, &start_id);
+                        let stream_items = db_g.xread(&key, &start_id)?;
                         if !stream_items.is_empty() {
                             let resp_stream_content = stream_items
-                                .iter()
+                                .into_iter()
                                 .map(|stream_item| stream_item.to_resp())
                                 .collect::<Vec<RespValue>>();
                             return Ok(RespValue::Array(vec![RespValue::Array(vec![
@@ -408,14 +408,14 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
     match command_name.to_uppercase().as_str() {
         "PING" => {
             if !args.is_empty() {
-                return Err(anyhow::anyhow!("PING command takes no arguments"));
+                return Err(anyhow!("PING command takes no arguments"));
             }
             Ok(Command::Ping)
         }
         "ECHO" => {
             let message: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("ECHO command requires an argument"))?
+                .ok_or_else(|| anyhow!("ECHO command requires an argument"))?
                 .clone()
                 .into();
             Ok(Command::Echo { message })
@@ -423,13 +423,13 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "SET" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("SET command requires a key"))?
+                .ok_or_else(|| anyhow!("SET command requires a key"))?
                 .clone()
                 .into();
 
             let value: String = args
                 .get(1)
-                .ok_or_else(|| anyhow::anyhow!("SET command requires a value"))?
+                .ok_or_else(|| anyhow!("SET command requires a value"))?
                 .clone()
                 .into();
 
@@ -440,24 +440,24 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 if px_str.to_uppercase() == "PX" {
                     let millis_str: String = args
                         .get(3)
-                        .ok_or_else(|| anyhow::anyhow!("Missing milliseconds value for PX"))?
+                        .ok_or_else(|| anyhow!("Missing milliseconds value for PX"))?
                         .clone()
                         .into();
                     expiry_millis = Some(
                         millis_str
                             .parse::<u64>()
-                            .map_err(|e| anyhow::anyhow!("Invalid PX value: {}", e))?,
+                            .map_err(|e| anyhow!("Invalid PX value: {}", e))?,
                     );
                     if args.len() > 4 {
-                        return Err(anyhow::anyhow!("Too many arguments for SET command"));
+                        return Err(anyhow!("Too many arguments for SET command"));
                     }
                 } else {
-                    return Err(anyhow::anyhow!(
+                    return Err(anyhow!(
                         "Unknown argument after value. Expected 'PX' or end of command."
                     ));
                 }
             } else if args.len() > 2 {
-                return Err(anyhow::anyhow!("Too many arguments for SET command"));
+                return Err(anyhow!("Too many arguments for SET command"));
             }
 
             Ok(Command::Set {
@@ -469,11 +469,11 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "RPUSH" => {
             let key = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("RPUSH command requires a key"))?
+                .ok_or_else(|| anyhow!("RPUSH command requires a key"))?
                 .clone()
                 .into();
             if args.len() < 2 {
-                return Err(anyhow::anyhow!("RPUSH command requires at least one value"));
+                return Err(anyhow!("RPUSH command requires at least one value"));
             }
 
             let values = args[1..]
@@ -486,11 +486,11 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "LPUSH" => {
             let key = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("LPUSH command requires a key"))?
+                .ok_or_else(|| anyhow!("LPUSH command requires a key"))?
                 .clone()
                 .into();
             if args.len() < 2 {
-                return Err(anyhow::anyhow!("LPUSH command requires at least one value"));
+                return Err(anyhow!("LPUSH command requires at least one value"));
             }
 
             let values = args[1..]
@@ -503,14 +503,14 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "LPOP" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("LPOP command requires a key"))?
+                .ok_or_else(|| anyhow!("LPOP command requires a key"))?
                 .clone()
                 .into();
 
             let count: usize = args.get(1).map(|v| v.clone().into()).unwrap_or(1);
 
             if args.len() > 2 {
-                return Err(anyhow::anyhow!("Too many arguments for LPOP command"));
+                return Err(anyhow!("Too many arguments for LPOP command"));
             }
 
             Ok(Command::Lpop { key, count })
@@ -518,14 +518,14 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "BLPOP" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("BLPOP command requires a key"))?
+                .ok_or_else(|| anyhow!("BLPOP command requires a key"))?
                 .clone()
                 .into();
 
             let timeout_seconds: f64 = args.get(1).map(|v| v.clone().into()).unwrap_or(0.0);
 
             if args.len() > 2 {
-                return Err(anyhow::anyhow!("Too many arguments for BLPOP command"));
+                return Err(anyhow!("Too many arguments for BLPOP command"));
             }
 
             Ok(Command::Blpop {
@@ -536,12 +536,12 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "LLEN" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("LLEN command requires a key"))?
+                .ok_or_else(|| anyhow!("LLEN command requires a key"))?
                 .clone()
                 .into();
 
             if args.len() > 1 {
-                return Err(anyhow::anyhow!("Too many arguments for LLEN command"));
+                return Err(anyhow!("Too many arguments for LLEN command"));
             }
 
             Ok(Command::Llen { key })
@@ -549,12 +549,12 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "GET" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("GET command requires a key"))?
+                .ok_or_else(|| anyhow!("GET command requires a key"))?
                 .clone()
                 .into();
 
             if args.len() > 1 {
-                return Err(anyhow::anyhow!("Too many arguments for GET command"));
+                return Err(anyhow!("Too many arguments for GET command"));
             }
 
             Ok(Command::Get { key })
@@ -562,24 +562,24 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "LRANGE" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a key"))?
+                .ok_or_else(|| anyhow!("LRANGE command requires a key"))?
                 .clone()
                 .into();
 
             let start: isize = args
                 .get(1)
-                .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a start value"))?
+                .ok_or_else(|| anyhow!("LRANGE command requires a start value"))?
                 .clone()
                 .into();
 
             let stop: isize = args
                 .get(2)
-                .ok_or_else(|| anyhow::anyhow!("LRANGE command requires a stop value"))?
+                .ok_or_else(|| anyhow!("LRANGE command requires a stop value"))?
                 .clone()
                 .into();
 
             if args.len() > 3 {
-                return Err(anyhow::anyhow!("Too many arguments for LRANGE command"));
+                return Err(anyhow!("Too many arguments for LRANGE command"));
             }
 
             Ok(Command::Lrange { key, start, stop })
@@ -587,7 +587,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "TYPE" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("TYPE command requires a key"))?
+                .ok_or_else(|| anyhow!("TYPE command requires a key"))?
                 .clone()
                 .into();
 
@@ -596,20 +596,20 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "XADD" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("XADD command requires a key"))?
+                .ok_or_else(|| anyhow!("XADD command requires a key"))?
                 .clone()
                 .into();
 
             let id: String = args
                 .get(1)
-                .ok_or_else(|| anyhow::anyhow!("XADD command requires an id"))?
+                .ok_or_else(|| anyhow!("XADD command requires an id"))?
                 .clone()
                 .into();
 
             let remaining_args = &args[2..];
 
             if !remaining_args.len().is_multiple_of(2) {
-                return Err(anyhow::anyhow!(
+                return Err(anyhow!(
                     "XADD command requires an even number of field-value pairs"
                 ));
             }
@@ -633,7 +633,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "XRANGE" => {
             let key: String = args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("XRANGE command requires a key"))?
+                .ok_or_else(|| anyhow!("XRANGE command requires a key"))?
                 .clone()
                 .into();
 
@@ -646,9 +646,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
         "XREAD" => {
             let first_arg: String = args
                 .first()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("XREAD command requires stream or block as first arg")
-                })?
+                .ok_or_else(|| anyhow!("XREAD command requires stream or block as first arg"))?
                 .clone()
                 .into();
 
@@ -657,7 +655,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
                 let duration: u64 = args
                     .get(1)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("XREAD command requires duration in millis after block")
+                        anyhow!("XREAD command requires duration in millis after block")
                     })?
                     .clone()
                     .into();
@@ -678,19 +676,17 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
 
             let stream_arg: String = remaining_args
                 .first()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("XREAD command requires stream or block as first arg")
-                })?
+                .ok_or_else(|| anyhow!("XREAD command requires stream or block as first arg"))?
                 .clone()
                 .into();
 
             if stream_arg.to_uppercase() != "STREAMS" {
-                return Err(anyhow::anyhow!("Expected 'streams' keyword"));
+                return Err(anyhow!("Expected 'streams' keyword"));
             }
 
             let remaining_args = &remaining_args[1..];
             if !remaining_args.len().is_multiple_of(2) {
-                return Err(anyhow::anyhow!(
+                return Err(anyhow!(
                     "XREAD STREAMS requires an even number of key-id pairs"
                 ));
             }
@@ -717,7 +713,7 @@ pub fn parse_command(command_name: String, args: Vec<RespValue>) -> Result<Comma
             Ok(Command::Xread { streams, duration })
         }
 
-        c => Err(anyhow::anyhow!("Unknown command: {}", c)),
+        c => Err(anyhow!("Unknown command: {}", c)),
     }
 }
 
@@ -725,7 +721,7 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
     let (last_ms_time, last_seq_num) = if let Some(last_id_str) = last_item_id {
         let (ms_str, seq_str) = last_id_str
             .split_once('-')
-            .ok_or_else(|| anyhow::anyhow!("Invalid last stream ID format: {}", last_id_str))?;
+            .ok_or_else(|| anyhow!("Invalid last stream ID format: {}", last_id_str))?;
         (ms_str.parse::<u128>()?, seq_str.parse::<u64>()?)
     } else {
         (0, 0)
@@ -736,7 +732,7 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
     } else {
         requested_id_str
             .split_once("-")
-            .ok_or_else(|| anyhow::anyhow!("Invalid stream ID format: {}", requested_id_str))?
+            .ok_or_else(|| anyhow!("Invalid stream ID format: {}", requested_id_str))?
     };
 
     let current_system_time_millis = SystemTime::now()
@@ -749,7 +745,7 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
     } else {
         requested_timestamp_part
             .parse()
-            .map_err(|_| anyhow::anyhow!("Timestamp is not a valid number"))?
+            .map_err(|_| anyhow!("Timestamp is not a valid number"))?
     };
 
     let new_sequence_number: u64 = if requested_sequence_part == "*" {
@@ -767,7 +763,7 @@ fn derive_new_stream_id(requested_id_str: &str, last_item_id: Option<&String>) -
     } else {
         requested_sequence_part
             .parse()
-            .map_err(|_| anyhow::anyhow!("Sequence is not a valid number"))?
+            .map_err(|_| anyhow!("Sequence is not a valid number"))?
     };
 
     if new_timestamp == 0 && new_sequence_number == 0 {
@@ -791,14 +787,14 @@ pub fn extract_command(value: RespValue) -> Result<(String, Vec<RespValue>)> {
     match value {
         RespValue::Array(a) => {
             if a.is_empty() {
-                return Err(anyhow::anyhow!("Empty array received as command"));
+                return Err(anyhow!("Empty array received as command"));
             }
             Ok((
                 unpack_bulk_str(a.first().unwrap().clone())?,
                 a.into_iter().skip(1).collect(),
             ))
         }
-        _ => Err(anyhow::anyhow!("Unexpected command format")),
+        _ => Err(anyhow!("Unexpected command format")),
     }
 }
 
@@ -806,7 +802,7 @@ fn unpack_bulk_str(value: RespValue) -> Result<String> {
     match value {
         RespValue::BulkString(s) => Ok(s),
         RespValue::SimpleString(s) => Ok(s),
-        _ => Err(anyhow::anyhow!(
+        _ => Err(anyhow!(
             "Expected command name to be a bulk or simple string"
         )),
     }
